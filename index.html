@@ -446,17 +446,14 @@
       video.style.display='block';playerEmpty.style.display='none';playerBar.style.display='flex';streamInfo.textContent=name;
       console.log('[xion] startPlayback url:', url);
       var ref = (currentData && currentData.referer) ? currentData.referer : 'https://jack27eo.mpgreatestclgczbmiddle.my/';
-      var cdnHeaders = { 'Referer': ref, 'Origin': ref.replace(/\/$/, '') };
-      function proxyFetch(targetUrl) {
-        return window.xionProxyUrl ? window.xionProxyUrl(targetUrl, cdnHeaders) : targetUrl;
-      }
+      var PROXY = '/api/hls?url='+encodeURIComponent(url)+'&referer='+encodeURIComponent(ref);
       if(Hls.isSupported()){
         function ProxyLoader(cfg){this.config=cfg}
         ProxyLoader.prototype.destroy=function(){};
         ProxyLoader.prototype.abort=function(){};
         ProxyLoader.prototype.load=function(context,cfg,cb){
           var reqUrl=context.url;
-          var pUrl=proxyFetch(reqUrl);
+          var pUrl='/api/hls?url='+encodeURIComponent(reqUrl)+'&referer='+encodeURIComponent(ref);
           console.log('[xion] loader proxy:',reqUrl.substring(0,100));
           fetch(pUrl).then(function(r){
             if(!r.ok){return r.text().then(function(t){throw new Error('HTTP '+r.status+': '+t.substring(0,200))})}
@@ -479,15 +476,14 @@
         hls.on(Hls.Events.MANIFEST_PARSED,function(){console.log('[xion] HLS manifest parsed');video.play().catch(function(e){console.warn('[xion] autoplay blocked:',e.message)})});
         hls.on(Hls.Events.ERROR,function(_,d){console.error('[xion] HLS error:',d.type,d.details,d.fatal);if(d.fatal){if(d.type===Hls.ErrorTypes.NETWORK_ERROR){showError('Network error: '+d.details);hls.startLoad()}else showError('Playback error: '+d.details)}});
       } else {
-        var proxySrc = proxyFetch(url);
-        console.log('[xion] native player via proxy:', proxySrc.substring(0,120));
+        console.log('[xion] native player via proxy:', PROXY.substring(0,120));
         video.onloadeddata = function(){ console.log('[xion] video loaded'); video.play().catch(function(e){console.warn('[xion] native play failed:',e.message);showError('Play failed: '+e.message)})};
         video.onerror = function(){
           var err=video.error;
           var code=err?err.code:0;
           var msg='Error '+code+': '+(err?err.message:'unknown');
           console.error('[xion]',msg,'url:',url);
-          fetch(proxySrc).then(function(r){
+          fetch(PROXY).then(function(r){
             return r.text().then(function(t){
               var info='Video: '+msg;
               info+='\n\nURL: '+url.substring(0,150);
@@ -500,10 +496,10 @@
               showError(info);
             });
           }).catch(function(e){
-            showError(msg+'\n\nURL: '+url.substring(0,150)+'\nFetch error: '+e.message);
+            showError(msg+'\n\nURL: '+url.substring(0,150)+'\nProxy fetch error: '+e.message);
           });
         };
-        video.src = proxySrc;
+        video.src = PROXY;
       }
     }
 
