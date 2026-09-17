@@ -203,7 +203,8 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 5v14l11-7z"/></svg>
           <p>Paste a URL, or pick a live match</p>
         </div>
-        <video id="video" controls playsinline webkit-playsinline style="display:none"></video>
+        <video id="video" playsinline webkit-playsinline style="display:none"></video>
+        <div id="tv-overlay" style="display:none;position:absolute;inset:0;z-index:9999;background:transparent"></div>
         <iframe id="webview-frame" allowfullscreen="true" allow="autoplay; fullscreen; media-capture" style="display:none;position:absolute;inset:0;width:100%;height:100%;border:none;z-index:100;background:#000"></iframe>
         <button id="webview-close" onclick="closeWebview()" style="display:none;position:absolute;top:8px;right:8px;z-index:200;background:rgba(0,0,0,0.7);color:#fff;border:1px solid #555;padding:6px 14px;border-radius:6px;font:600 12px system-ui;cursor:pointer">&#x2715; Back to app</button>
         <button class="fullscreen-exit" id="fs-exit-btn" onclick="exitFullscreen()">&#x2715;</button>
@@ -317,11 +318,17 @@
     var isTV = new URLSearchParams(window.location.search).get('tv') === '1';
     if (isTV) {
       document.body.classList.add('tv');
+      var tvOverlay = document.getElementById('tv-overlay');
       document.addEventListener('DOMContentLoaded', function() {
-        var vids = document.querySelectorAll('video');
-        for (var i = 0; i < vids.length; i++) {
-          vids[i].removeAttribute('controls');
-          vids[i].controlsList.add('nodownload');
+        var v = document.getElementById('video');
+        if (v) {
+          v.removeAttribute('controls');
+          v.addEventListener('play', function() { tvOverlay.style.display = 'block'; });
+          v.addEventListener('pause', function() { tvOverlay.style.display = 'none'; });
+          v.addEventListener('ended', function() { tvOverlay.style.display = 'none'; });
+          tvOverlay.addEventListener('click', function() {
+            if (v.paused) { v.play(); } else { v.pause(); }
+          });
         }
       });
     }
