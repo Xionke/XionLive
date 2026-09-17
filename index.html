@@ -166,13 +166,14 @@
     body.tv .input-bar{display:none!important}
     body.tv .mobile-nav{display:none!important}
     body.tv .mobile-panel-wrap{display:none!important}
-    body.tv .sidebar{position:fixed;top:0;right:0;bottom:0;width:320px;z-index:200;display:flex!important;flex-direction:column}
+    body.tv .sidebar{position:fixed;top:0;right:0;bottom:0;width:320px;z-index:200;display:flex!important;flex-direction:column;transition:transform 0.3s ease}
+    body.tv .sidebar.sidebar-hidden{transform:translateX(100%)}
     body.tv .player-bar{display:none!important}
-    body.tv .player-wrap{position:fixed!important;inset:0!important;z-index:100!important}
+    body.tv .player-wrap{position:fixed!important;inset:0!important;z-index:100!important;border:none!important;outline:none!important;box-shadow:none!important}
+    body.tv .player-wrap *{outline:none!important;box-shadow:none!important}
     body.tv .player-wrap video{width:100%;height:100%;object-fit:contain}
     body.tv .player-wrap video::-webkit-media-controls{display:none!important}
     body.tv .player-wrap video::-webkit-media-controls-enclosure{display:none!important}
-    body.tv .player-wrap video[controls]{controlsList="nodownload noplaybackrate"}
     body.tv .player-empty svg{width:64px;height:64px;opacity:0.2}
     body.tv .player-empty p{font-size:1rem;opacity:0.5}
   </style>
@@ -319,13 +320,23 @@
     if (isTV) {
       document.body.classList.add('tv');
       var tvOverlay = document.getElementById('tv-overlay');
+      var tvSidebar = document.querySelector('.sidebar');
       document.addEventListener('DOMContentLoaded', function() {
         var v = document.getElementById('video');
         if (v) {
           v.removeAttribute('controls');
-          v.addEventListener('play', function() { tvOverlay.style.display = 'block'; });
-          v.addEventListener('pause', function() { tvOverlay.style.display = 'none'; });
-          v.addEventListener('ended', function() { tvOverlay.style.display = 'none'; });
+          v.addEventListener('play', function() {
+            tvOverlay.style.display = 'block';
+            if (tvSidebar) tvSidebar.classList.add('sidebar-hidden');
+          });
+          v.addEventListener('pause', function() {
+            tvOverlay.style.display = 'none';
+            if (tvSidebar) tvSidebar.classList.remove('sidebar-hidden');
+          });
+          v.addEventListener('ended', function() {
+            tvOverlay.style.display = 'none';
+            if (tvSidebar) tvSidebar.classList.remove('sidebar-hidden');
+          });
           tvOverlay.addEventListener('click', function() {
             if (v.paused) { v.play(); } else { v.pause(); }
           });
