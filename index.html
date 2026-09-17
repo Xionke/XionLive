@@ -159,6 +159,23 @@
     .mobile-panel .sidebar-tabs button{padding:12px 0;font-size:0.82rem}
     .mobile-panel .tab-panel{min-height:0}
     .mobile-panel .sidebar-list{padding-bottom:var(--safe-b)}
+
+    /* === TV MODE === */
+    body.tv .layout{grid-template-columns:1fr;grid-template-rows:1fr}
+    body.tv .header{display:none!important}
+    body.tv .input-bar{display:none!important}
+    body.tv .sidebar{display:none!important}
+    body.tv .mobile-nav{display:none!important}
+    body.tv .mobile-panel-wrap{display:none!important}
+    body.tv .player-bar{position:fixed;bottom:0;left:0;right:0;z-index:350;background:linear-gradient(transparent,rgba(0,0,0,0.8));border:none;padding:12px 20px;opacity:0;transition:opacity 0.3s}
+    body.tv .player-bar.show-bar{opacity:1}
+    body.tv .player-bar .export-btns{display:none}
+    body.tv .player-bar .player-controls{border-left:1px solid rgba(255,255,255,0.15)}
+    body.tv .player-bar .player-controls button{color:rgba(255,255,255,0.7)}
+    body.tv .player-wrap{position:fixed!important;inset:0!important;z-index:100!important}
+    body.tv .player-wrap video{width:100%;height:100%;object-fit:contain}
+    body.tv .player-empty svg{width:64px;height:64px;opacity:0.2}
+    body.tv .player-empty p{font-size:1rem;opacity:0.5}
   </style>
 </head>
 <body>
@@ -298,6 +315,8 @@
 
   <script>
     var isMobile = false;
+    var isTV = new URLSearchParams(window.location.search).get('tv') === '1';
+    if (isTV) document.body.classList.add('tv');
     function detectMobile() {
       var touch = navigator.maxTouchPoints > 0;
       var narrow = window.innerWidth <= 1024;
@@ -474,11 +493,11 @@
           highBufferWatchdogPeriod:2,overrideNative:true
         });
         hls.loadSource(url);hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED,function(){console.log('[xion] HLS manifest parsed');video.play().catch(function(e){console.warn('[xion] autoplay blocked:',e.message)});if(castSession&&currentData)castCurrentMedia()});
+        hls.on(Hls.Events.MANIFEST_PARSED,function(){console.log('[xion] HLS manifest parsed');video.play().catch(function(e){console.warn('[xion] autoplay blocked:',e.message)});if(isTV){document.body.classList.add('fullscreen-mode');if(screen.orientation&&screen.orientation.lock)screen.orientation.lock('landscape').catch(function(){});if(document.documentElement.requestFullscreen)document.documentElement.requestFullscreen().catch(function(){})}if(castSession&&currentData)castCurrentMedia()});
         hls.on(Hls.Events.ERROR,function(_,d){console.error('[xion] HLS error:',d.type,d.details,d.fatal);if(d.fatal){if(d.type===Hls.ErrorTypes.NETWORK_ERROR){showError('Network error: '+d.details);hls.startLoad()}else showError('Playback error: '+d.details)}});
       } else {
         console.log('[xion] native player url:', url.substring(0,120));
-        video.onloadeddata = function(){ console.log('[xion] video loaded'); video.play().catch(function(e){console.warn('[xion] native play failed:',e.message);showError('Play failed: '+e.message)});if(castSession&&currentData)castCurrentMedia()};
+        video.onloadeddata = function(){ console.log('[xion] video loaded'); video.play().catch(function(e){console.warn('[xion] native play failed:',e.message);showError('Play failed: '+e.message)});if(isTV){document.body.classList.add('fullscreen-mode');if(screen.orientation&&screen.orientation.lock)screen.orientation.lock('landscape').catch(function(){});if(document.documentElement.requestFullscreen)document.documentElement.requestFullscreen().catch(function(){})}if(castSession&&currentData)castCurrentMedia()};
         video.onerror = function(){
           var err=video.error;
           var code=err?err.code:0;
