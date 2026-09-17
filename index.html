@@ -7,6 +7,7 @@
   <script src="/hls.min.js"></script>
   <script src="/js/match-parser.js"></script>
   <script src="/js/xion-resolver.js"></script>
+  <script src="https://www.gstatic.com/cv2/cast_sender.js?loadCastFramework=1"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     :root{
@@ -53,6 +54,10 @@
     .player-bar .stream-info{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .player-bar .export-btns{display:flex;gap:6px}
     .player-bar .export-btns button{padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--muted);font:0.72rem var(--sans);cursor:pointer}
+    .player-bar .player-controls{display:flex;gap:4px;margin-left:8px;padding-left:8px;border-left:1px solid var(--border)}
+    .player-bar .player-controls button{padding:4px;border:0;border-radius:4px;background:transparent;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:color 0.15s}
+    .player-bar .player-controls button:hover{color:var(--text)}
+    .player-bar .player-controls button.active{color:var(--accent)}
 
     .sidebar{background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;min-height:0}
     .sidebar-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0}
@@ -124,6 +129,9 @@
     body.mobile .player-bar{position:fixed;bottom:52px;left:0;right:0;z-index:350;background:linear-gradient(transparent,rgba(0,0,0,0.8));border:none;padding:8px 16px;opacity:0;transition:opacity 0.3s}
     body.mobile .player-bar.show-bar{opacity:1}
     body.mobile .player-bar .export-btns{display:none}
+    body.mobile .player-bar .player-controls{border-left:1px solid rgba(255,255,255,0.15)}
+    body.mobile .player-bar .player-controls button{color:rgba(255,255,255,0.7)}
+    body.mobile .player-bar .player-controls button.active{color:var(--accent2)}
     body.mobile .sidebar{display:none}
 
     body.mobile .player-wrap{position:fixed;inset:0;z-index:100;background:#000}
@@ -192,6 +200,17 @@
           <button onclick="copyExport('proxy')">Proxy URL</button>
           <button onclick="copyExport('vlc')">VLC</button>
           <button onclick="copyExport('mpv')">mpv</button>
+        </div>
+        <div class="player-controls">
+          <button id="airplay-btn" onclick="startAirPlay()" title="AirPlay" style="display:none">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><path d="M5 17H4a2 2 0 01-2-2V5a2 2 0 012-2h16a2 2 0 012 2v10a2 2 0 01-2 2h-1"/><polygon points="12 15 17 21 7 21 12 15"/></svg>
+          </button>
+          <button id="cast-btn" title="Cast" style="display:none">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><path d="M2 16.1A5 5 0 015.9 20M2 12.05A9 9 0 019.95 20M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><circle cx="2" cy="20" r="1" fill="currentColor"/></svg>
+          </button>
+          <button onclick="enterFullscreen()" title="Fullscreen">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+          </button>
         </div>
       </div>
     </div>
@@ -454,11 +473,11 @@
           highBufferWatchdogPeriod:2,overrideNative:true
         });
         hls.loadSource(url);hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED,function(){console.log('[xion] HLS manifest parsed');video.play().catch(function(e){console.warn('[xion] autoplay blocked:',e.message)})});
+        hls.on(Hls.Events.MANIFEST_PARSED,function(){console.log('[xion] HLS manifest parsed');video.play().catch(function(e){console.warn('[xion] autoplay blocked:',e.message)});if(castSession&&currentData)castCurrentMedia()});
         hls.on(Hls.Events.ERROR,function(_,d){console.error('[xion] HLS error:',d.type,d.details,d.fatal);if(d.fatal){if(d.type===Hls.ErrorTypes.NETWORK_ERROR){showError('Network error: '+d.details);hls.startLoad()}else showError('Playback error: '+d.details)}});
       } else {
         console.log('[xion] native player url:', url.substring(0,120));
-        video.onloadeddata = function(){ console.log('[xion] video loaded'); video.play().catch(function(e){console.warn('[xion] native play failed:',e.message);showError('Play failed: '+e.message)})};
+        video.onloadeddata = function(){ console.log('[xion] video loaded'); video.play().catch(function(e){console.warn('[xion] native play failed:',e.message);showError('Play failed: '+e.message)});if(castSession&&currentData)castCurrentMedia()};
         video.onerror = function(){
           var err=video.error;
           var code=err?err.code:0;
@@ -832,6 +851,104 @@
         v.style.transform = 'scale(' + curScale + ') translate(' + (dragX / curScale) + 'px,' + (dragY / curScale) + 'px)';
         v.style.objectFit = curScale > 1.05 ? 'cover' : 'contain';
       }
+    })();
+
+    /* === CHROMECAST === */
+    var castSession = null;
+    var castMedia = null;
+
+    function initCast() {
+      if (!window.chrome || !window.chrome.cast) return;
+      var castContext = cast.framework.CastContext.getInstance();
+      castContext.setOptions({
+        receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
+        autoJoinPolicy: chrome.cast.AutoJoinPolicy.SCOPED_THIS_TAB_ONLY
+      });
+      castContext.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, function(e) {
+        if (e.sessionState === cast.framework.SessionState.SESSION_STARTED) {
+          castSession = castContext.getCurrentSession();
+          document.getElementById('cast-btn').classList.add('active');
+          console.log('[xion] cast session started');
+          if (currentData && currentData.directUrl) castCurrentMedia();
+        } else if (e.sessionState === cast.framework.SessionState.SESSION_ENDED) {
+          castSession = null; castMedia = null;
+          document.getElementById('cast-btn').classList.remove('active');
+          console.log('[xion] cast session ended');
+        }
+      });
+      var castBtn = document.getElementById('cast-btn');
+      castBtn.style.display = '';
+      castBtn.addEventListener('click', function() {
+        if (castSession) {
+          castSession.endSession(true);
+        } else {
+          castContext.requestSession().catch(function(e) { console.warn('[xion] cast request failed:', e.message); });
+        }
+      });
+    }
+
+    function castCurrentMedia() {
+      if (!castSession || !currentData) return;
+      var mediaUrl = window.location.origin + currentData.playableUrl;
+      var contentType = 'application/x-mpegURL';
+      if (!/\.m3u8/i.test(mediaUrl)) contentType = 'video/mp2t';
+      var mediaInfo = new cast.media.MediaInfo(mediaUrl, contentType);
+      mediaInfo.metadata = new cast.media.GenericMediaMetadata();
+      mediaInfo.metadata.title = currentData.name || 'XionLive';
+      if (currentData.referer) {
+        mediaInfo.customData = { headers: { Referer: currentData.referer } };
+      }
+      var request = new cast.media.LoadRequest(mediaInfo);
+      request.autoplay = true;
+      castSession.loadMedia(request).then(function(media) {
+        castMedia = media;
+        console.log('[xion] cast media loaded');
+      }).catch(function(e) { console.error('[xion] cast load error:', e.message); });
+    }
+
+    if (window.__onGCastApiAvailable) {
+      initCast();
+    } else {
+      window.__onGCastApiAvailable = function(available) {
+        if (available) initCast();
+      };
+    }
+
+    /* === AIRPLAY === */
+    (function() {
+      var v = document.getElementById('video');
+      var btn = document.getElementById('airplay-btn');
+      if (v.webkitShowPlaybackTargetPicker) {
+        btn.style.display = '';
+      } else if (window.MediaSource && /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent)) {
+        btn.style.display = '';
+      }
+    })();
+
+    function startAirPlay() {
+      var v = document.getElementById('video');
+      if (v.webkitShowPlaybackTargetPicker) {
+        v.webkitShowPlaybackTargetPicker();
+      } else {
+        showToast('AirPlay not available on this browser');
+      }
+    }
+
+    /* === MOBILE: tap to show/hide player bar === */
+    (function() {
+      if (!('ontouchstart' in window)) return;
+      var v = document.getElementById('video');
+      var bar = document.getElementById('player-bar');
+      var controlsVisible = false;
+      var hideTimer = null;
+      v.addEventListener('click', function() {
+        if (isMobile && !controlsVisible) {
+          bar.classList.add('show-bar');
+          controlsVisible = true;
+          clearTimeout(hideTimer);
+          hideTimer = setTimeout(function() { bar.classList.remove('show-bar'); controlsVisible = false; }, 4000);
+        }
+      });
     })();
   </script>
 </body>
