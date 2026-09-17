@@ -7,6 +7,7 @@
   <script src="/hls.min.js"></script>
   <script src="/js/match-parser.js"></script>
   <script src="/js/xion-resolver.js"></script>
+  <script>window.__onGCastApiAvailable=function(available){if(available){console.log('[xion] Cast API available')}}</script>
   <script src="https://www.gstatic.com/cv2/cast_sender.js?loadCastFramework=1"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -858,34 +859,48 @@
     var castMedia = null;
 
     function initCast() {
-      if (!window.chrome || !window.chrome.cast) return;
-      var castContext = cast.framework.CastContext.getInstance();
-      castContext.setOptions({
-        receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
-        autoJoinPolicy: chrome.cast.AutoJoinPolicy.SCOPED_THIS_TAB_ONLY
-      });
-      castContext.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, function(e) {
-        if (e.sessionState === cast.framework.SessionState.SESSION_STARTED) {
-          castSession = castContext.getCurrentSession();
-          document.getElementById('cast-btn').classList.add('active');
-          console.log('[xion] cast session started');
-          if (currentData && currentData.directUrl) castCurrentMedia();
-        } else if (e.sessionState === cast.framework.SessionState.SESSION_ENDED) {
-          castSession = null; castMedia = null;
-          document.getElementById('cast-btn').classList.remove('active');
-          console.log('[xion] cast session ended');
-        }
-      });
-      var castBtn = document.getElementById('cast-btn');
-      castBtn.style.display = '';
-      castBtn.addEventListener('click', function() {
-        if (castSession) {
-          castSession.endSession(true);
-        } else {
-          castContext.requestSession().catch(function(e) { console.warn('[xion] cast request failed:', e.message); });
-        }
-      });
+      if (!window.chrome || !window.chrome.cast || !window.cast || !window.cast.framework) {
+        setTimeout(initCast, 500);
+        return;
+      }
+      try {
+        var castContext = cast.framework.CastContext.getInstance();
+        castContext.setOptions({
+          receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
+          autoJoinPolicy: chrome.cast.AutoJoinPolicy.SCOPED_THIS_TAB_ONLY
+        });
+        castContext.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, function(e) {
+          if (e.sessionState === cast.framework.SessionState.SESSION_STARTED) {
+            castSession = castContext.getCurrentSession();
+            document.getElementById('cast-btn').classList.add('active');
+            console.log('[xion] cast session started');
+            if (currentData && currentData.playableUrl) castCurrentMedia();
+          } else if (e.sessionState === cast.framework.SessionState.SESSION_ENDED) {
+            castSession = null; castMedia = null;
+            document.getElementById('cast-btn').classList.remove('active');
+            console.log('[xion] cast session ended');
+          }
+        });
+        var castBtn = document.getElementById('cast-btn');
+        castBtn.style.display = '';
+        castBtn.onclick = function() {
+          if (castSession) {
+            castSession.endSession(true);
+          } else {
+            castContext.requestSession().catch(function(e) {
+              console.warn('[xion] cast request failed:', e.message);
+              showToast('No Chromecast devices found');
+            });
+          }
+        };
+        console.log('[xion] Cast SDK initialized');
+      } catch(e) {
+        console.warn('[xion] Cast init error:', e.message);
+        setTimeout(initCast, 2000);
+      }
     }
+
+    setTimeout(initCast, 1500);
 
     function castCurrentMedia() {
       if (!castSession || !currentData) return;
@@ -904,14 +919,6 @@
         castMedia = media;
         console.log('[xion] cast media loaded');
       }).catch(function(e) { console.error('[xion] cast load error:', e.message); });
-    }
-
-    if (window.__onGCastApiAvailable) {
-      initCast();
-    } else {
-      window.__onGCastApiAvailable = function(available) {
-        if (available) initCast();
-      };
     }
 
     /* === AIRPLAY === */
