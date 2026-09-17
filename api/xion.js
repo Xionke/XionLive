@@ -1,25 +1,17 @@
-import { createCipheriv } from "node:crypto";
-import { inflateSync, gunzipSync } from "node:zlib";
+import { createCipheriv, createHash } from "node:crypto";
 
-export const config = { api: { responseLimit: false, maxDuration: 30 } };
+export const config = { api: { responseLimit: false, maxDuration: 60 } };
 
-var API_BASE = "https://apis-data10.tcdru136ovur.ru";
-var REFERER = "https://jack27eo.mpgreatestclgczbmiddle.my/";
-var ORIGIN = "https://jack27eo.mpgreatestclgczbmiddle.my";
-var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+var UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+var DEFAULT_REFERER = "https://jack27eo.mpgreatestclgczbmiddle.my/";
+var PLAY_DOMAINS_RE = /fctv33|fctv|rbtv|rbsports|superabbit|madplay|hubu\.ru|mpgreatestclgczbmiddle|tm3troops31patrol|tcdru136ovur|2wc4tool8utphnumber|8l3duspoken587uclock|tn76degree12ec3out|fut0newsiryroquite/i;
 
-function apiHeaders(extra) {
-  return Object.assign({ "User-Agent": UA, "Referer": REFERER, "Origin": ORIGIN, "Accept": "application/json, text/plain, */*" }, extra || {});
-}
-
-async function httpsGet(url, headers) {
-  var resp = await fetch(url, { headers: headers || apiHeaders(), redirect: "follow" });
-  var buf = new Uint8Array(await resp.arrayBuffer());
-  var text = () => new TextDecoder().decode(buf);
-  var hdrs = {};
-  resp.headers.forEach((v, k) => { hdrs[k.toLowerCase()] = v; });
-  return { status: resp.status, headers: hdrs, buffer: buf, text };
-}
+var SPORT_SLUGS = { football:1, basketball:2, tennis:3, baseball:4, cricket:6, motorsport:7, rugby:8, "american-football":9, "aussie-rules":10, hockey:11, badminton:12, volleyball:13, fighting:14, cycling:15, handball:16, others:90 };
+var LOCALE_CODES = new Set(["en","zh","th","vi","id","pt","es","tr","ru","ko","ja","nl","ar","hi","bn","fr","de","it"]);
+var MATCH_DETAIL_SIGNATURE_CODE = 0x66;
+var SIGNATURE_BOOTSTRAP_CODES = [0x66, 0x67, 0x68, 0x69];
+var REQUEST_PARAM_ORDER = ["matchId","leagueId","seasonId","sportType","language","stream"];
+var NUMERIC_KEYS = new Set(["sportType","language","leagueId","seasonId","siteType"]);
 
 function rot47(s) {
   return s.split("").map(function(c) {
@@ -36,98 +28,172 @@ function readVarint(buf, off) {
   return [v, i];
 }
 function readLD(buf, off) { var r = readVarint(buf, off); return [buf.subarray(r[1], r[1] + r[0]), r[1] + r[0]]; }
-function td(b) { return new TextDecoder().decode(b); }
+function td(b) { return Buffer.isBuffer(b) ? b.toString("utf8") : new TextDecoder().decode(b); }
 
 function readFields(buf) {
   var fields = new Map(); var off = 0;
   while (off < buf.length) {
     var tag = readVarint(buf, off); off = tag[1];
     var fnum = tag[0] >> 3, wire = tag[0] & 7;
-    if (wire === 0) { var val = readVarint(buf, off); off = val[1]; var tmp = new Uint8Array(8); var sz = 0, v2 = val[0]; while (v2 > 0x7F) { tmp[sz++] = (v2 & 0x7F) | 0x80; v2 >>>= 7; } tmp[sz++] = v2; var list = fields.get(fnum) || []; list.push(tmp.subarray(0, sz)); fields.set(fnum, list); continue; }
+    if (wire === 0) { var val = readVarint(buf, off); off = val[1]; var tmp = Buffer.allocUnsafe(8); var sz = 0, v2 = val[0]; while (v2 > 0x7F) { tmp[sz++] = (v2 & 0x7F) | 0x80; v2 >>>= 7; } tmp[sz++] = v2; var list = fields.get(fnum) || []; list.push(tmp.subarray(0, sz)); fields.set(fnum, list); continue; }
     if (wire === 2) { var chunk = readLD(buf, off); off = chunk[1]; var list2 = fields.get(fnum) || []; list2.push(chunk[0]); fields.set(fnum, list2); continue; }
     break;
   }
   return fields;
 }
 
-function parseEnvelope(buf) { var f = readFields(buf); return { message: f.has(3) ? td(f.get(3)[0]) : "", payload: f.get(10) || [] }; }
-
-function parseSignatures(buf) {
-  var env = parseEnvelope(buf); var results = [];
-  env.payload.forEach(function(chunk) {
-    var off = 0;
-    while (off < chunk.length) {
-      var tag = readVarint(chunk, off); off = tag[1];
-      if ((tag[0] & 7) !== 2) continue;
-      var ld = readLD(chunk, off); off = ld[1]; var inner = ld[0];
-      var code = 0, value = "", ii = 0;
-      while (ii < inner.length) {
-        var it = readVarint(inner, ii); ii = it[1]; var ifn = it[0] >> 3, iwire = it[0] & 7;
-        if (iwire === 0) { var iv = readVarint(inner, ii); ii = iv[1]; if (ifn === 1) code = iv[0]; continue; }
-        if (iwire === 2) { var ild = readLD(inner, ii); ii = ild[1]; if (ifn === 2) value = td(ild[0]); }
-      }
-      if (code) results.push({ code: code, value: value });
-    }
-  });
-  return results;
+function parseApiEnvelope(buf) {
+  var fields = readFields(buf);
+  return { message: fields.get(3) ? td(fields.get(3)[0]) : "", payload: fields.get(10) || [] };
 }
 
-function parseGeo(buf) { var env = parseEnvelope(buf); if (!env.payload.length) return {}; var f = readFields(env.payload[0]); return { country: f.has(2) ? td(f.get(2)[0]) : "", continent: f.has(3) ? td(f.get(3)[0]) : "" }; }
+function parseSignatureEntries(chunk) {
+  var entries = []; var off = 0;
+  while (off < chunk.length) {
+    var tag = readVarint(chunk, off); off = tag[1];
+    if ((tag[0] & 7) !== 2) continue;
+    var ld = readLD(chunk, off); off = ld[1]; var inner = ld[0];
+    var code = 0, value = "", ii = 0;
+    while (ii < inner.length) {
+      var it = readVarint(inner, ii); ii = it[1]; var ifn = it[0] >> 3, iwire = it[0] & 7;
+      if (iwire === 0) { var iv = readVarint(inner, ii); ii = iv[1]; if (ifn === 1) code = iv[0]; continue; }
+      if (iwire === 2) { var ild = readLD(inner, ii); ii = ild[1]; if (ifn === 2) value = td(ild[0]); }
+    }
+    if (code) entries.push({ code: code, value: value });
+  }
+  return entries;
+}
+
+function parseUserGeo(buf) {
+  var env = parseApiEnvelope(buf);
+  if (!env.payload[0]) return {};
+  var fields = readFields(env.payload[0]);
+  return { country: fields.get(2) ? td(fields.get(2)[0]) : "", continent: fields.get(3) ? td(fields.get(3)[0]) : "" };
+}
+
+function readVarintField(buf) {
+  if (!buf) return undefined;
+  return readVarint(buf, 0)[0];
+}
 
 function parseStreamItem(buf) {
-  var f = readFields(buf); var sid = "";
-  if (f.has(1)) { var c = f.get(1)[0]; sid = c.length <= 8 ? String(readVarint(c, 0)[0]) : td(c); }
-  return { streamId: sid, url: f.has(4) ? td(f.get(4)[0]) : "", name: f.has(3) ? td(f.get(3)[0]) : "", siteType: f.has(9) ? readVarint(f.get(9)[0], 0)[0] : 0 };
+  var fields = readFields(buf);
+  var streamIdChunk = fields.get(1) ? fields.get(1)[0] : null;
+  var streamId = streamIdChunk && streamIdChunk.length <= 8 ? String(readVarint(streamIdChunk, 0)[0]) : (streamIdChunk ? td(streamIdChunk) : "");
+  return {
+    streamId: streamId,
+    url: fields.get(4) ? td(fields.get(4)[0]) : "",
+    name: fields.get(3) ? td(fields.get(3)[0]) : "",
+    siteType: readVarintField(fields.get(9) ? fields.get(9)[0] : null)
+  };
 }
 
-function parseMatchDetail(buf) { var env = parseEnvelope(buf); if (!env.payload.length) return { stream: [] }; var f = readFields(env.payload[0]); return { stream: (f.get(2) || []).map(parseStreamItem) }; }
+function parseMatchDetail(buf) {
+  var env = parseApiEnvelope(buf);
+  if (!env.payload[0]) return { stream: [] };
+  var root = readFields(env.payload[0]);
+  return { stream: (root.get(2) || []).map(parseStreamItem) };
+}
 
 function parseStreamDetail(buf) {
-  var env = parseEnvelope(buf); if (!env.payload.length) return {};
-  var f = readFields(env.payload[0]);
-  if (f.has(2)) return parseStreamItem(f.get(2)[0]);
-  if (f.has(1)) return parseStreamItem(f.get(1)[0]);
-  return parseStreamItem(env.payload[0]);
+  var env = parseApiEnvelope(buf);
+  if (!env.payload[0]) return {};
+  var fields = readFields(env.payload[0]);
+  var streamBuffer = (fields.get(2) ? fields.get(2)[0] : null) || (fields.get(1) ? fields.get(1)[0] : null) || env.payload[0];
+  return parseStreamItem(streamBuffer);
 }
 
-var NUMERIC_KEYS = { sportType: 1, language: 1, leagueId: 1, seasonId: 1, siteType: 1 };
-var PARAM_ORDER = ["matchId", "leagueId", "seasonId", "sportType", "language", "stream"];
-
-function sortParams(p) {
-  var norm = {};
-  for (var k in p) norm[k] = (NUMERIC_KEYS[k] && typeof p[k] === "string" && /^\d+$/.test(p[k])) ? Number(p[k]) : p[k];
-  var keys = Object.keys(norm).sort(function(a, b) { var ai = PARAM_ORDER.indexOf(a), bi = PARAM_ORDER.indexOf(b); return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi); });
-  var sorted = {}; keys.forEach(function(k) { sorted[k] = norm[k]; }); return sorted;
+function normalizeValue(key, value) {
+  if (typeof value === "string" && NUMERIC_KEYS.has(key) && /^\d+$/.test(value)) return Number(value);
+  return value;
+}
+function sortRequestParams(params) {
+  var normalized = {};
+  for (var k in params) normalized[k] = normalizeValue(k, params[k]);
+  var order = new Map(REQUEST_PARAM_ORDER.map(function(key, index) { return [key, index]; }));
+  var keys = Object.keys(normalized).sort(function(a, b) { return (order.get(a) ?? -1) - (order.get(b) ?? -1); });
+  var sorted = {};
+  keys.forEach(function(k) { sorted[k] = normalized[k]; });
+  return sorted;
+}
+function requestHashPrefix(params) {
+  var md5 = createHash("md5").update(JSON.stringify(sortRequestParams(params)), "utf8").digest("hex");
+  return md5.slice(0, 6);
 }
 
-function md5(s) {
-  function L(k,d){return(k<<d)|(k>>>(32-d))}
-  function K(G,k){var I,d,F,H,x;F=(G&2147483648);H=(k&2147483648);I=(G&1073741824);d=(k&1073741824);x=(G&1073741823)+(k&1073741823);if(I&d){return(x^2147483648^F^H)}if(I|d){if(x&1073741824){return(x^3221225472^F^H)}else{return(x^1073741824^F^H)}}else{return(x^F^H)}}
-  function aa(a,b,c,d,x,s,ac){a=K(a,K(K(b&c|~b&d,x),ac));return K(L(a,s),b)}
-  function ba(a,b,c,d,x,s,ac){a=K(a,K(K(b&d|c&~d,x),ac));return K(L(a,s),b)}
-  function ca(a,b,c,d,x,s,ac){a=K(a,K(K(b^c^d,x),ac));return K(L(a,s),b)}
-  function da(a,b,c,d,x,s,ac){a=K(a,K(K(c^(b|~d),x),ac));return K(L(a,s),b)}
-  function ConvertToWordArray(s){var lWordCount;var lMessageLength=s.length;var lNumberOfWords_temp1=lMessageLength+8;var lNumberOfWords_temp2=(lNumberOfWords_temp1-(lNumberOfWords_temp1%64))/64;var lNumberOfWords=(lNumberOfWords_temp2+1)*16;var lWordArray=Array(lNumberOfWords-1);var lBytePosition=0;var lByteCount=0;while(lByteCount<lMessageLength){lWordCount=(lByteCount-(lByteCount%4))/4;lBytePosition=(lByteCount%4)*8;lWordArray[lWordCount]=(lWordArray[lWordCount]|(s.charCodeAt(lByteCount)<<lBytePosition));lByteCount++}lWordCount=(lByteCount-(lByteCount%4))/4;lBytePosition=(lByteCount%4)*8;lWordArray[lWordCount]=lWordArray[lWordCount]|(128<<lBytePosition);lWordArray[lNumberOfWords-2]=lMessageLength<<3;lWordArray[lNumberOfWords-1]=lMessageLength>>>29;return lWordArray}
-  function WordToHex(lValue){var WordToHexValue="",WordToHexValue_temp="",lByte,lCount;for(lCount=0;lCount<=3;lCount++){lByte=(lValue>>>(lCount*8))&255;WordToHexValue_temp="0"+lByte.toString(16);WordToHexValue=WordToHexValue+WordToHexValue_temp.substr(WordToHexValue_temp.length-2,2)}return WordToHexValue}
-  var x=ConvertToWordArray(s);var a=0x67452301,b=0xEFCDAB89,c=0x98BADCFE,d=0x10325476;
-  var S11=7,S12=12,S13=17,S14=22,S21=5,S22=9,S23=14,S24=20,S31=4,S32=11,S33=16,S34=23,S41=6,S42=10,S43=15,S44=21;
-  for(var k=0;k<x.length;k+=16){var AA=a,BB=b,CC=c,DD=d;
-    a=aa(a,b,c,d,x[k],S11,0xD76AA478);d=aa(d,a,b,c,x[k+1],S12,0xE8C7B756);c=aa(c,d,a,b,x[k+2],S13,0x242070DB);b=aa(b,c,d,a,x[k+3],S14,0xC1BDCEEE);a=aa(a,b,c,d,x[k+4],S11,0xF57C0FAF);d=aa(d,a,b,c,x[k+5],S12,0x4787C62A);c=aa(c,d,a,b,x[k+6],S13,0xA8304613);b=aa(b,c,d,a,x[k+7],S14,0xFD469501);a=aa(a,b,c,d,x[k+8],S11,0x698098D8);d=aa(d,a,b,c,x[k+9],S12,0x8B44F7AF);c=aa(c,d,a,b,x[k+10],S13,0xFFFF5BB1);b=aa(b,c,d,a,x[k+11],S14,0x895CD7BE);a=aa(a,b,c,d,x[k+12],S11,0x6B901122);d=aa(d,a,b,c,x[k+13],S12,0xFD987193);c=aa(c,d,a,b,x[k+14],S13,0xA679438E);b=aa(b,c,d,a,x[k+15],S14,0x49B40821);
-    a=ba(a,b,c,d,x[k+1],S21,0xF61E2562);d=ba(d,a,b,c,x[k+6],S22,0xC040B340);c=ba(c,d,a,b,x[k+11],S23,0x265E5A51);b=ba(b,c,d,a,x[k],S24,0xE9B6C7AA);a=ba(a,b,c,d,x[k+5],S21,0xD62F105D);d=ba(d,a,b,c,x[k+10],S22,0x2441453);c=ba(c,d,a,b,x[k+15],S23,0xD8A1E681);b=ba(b,c,d,a,x[k+4],S24,0xE7D3FBC8);a=ba(a,b,c,d,x[k+9],S21,0x21E1CDE6);d=ba(d,a,b,c,x[k+14],S22,0xC33707D6);c=ba(c,d,a,b,x[k+3],S23,0xF4D50D87);b=ba(b,c,d,a,x[k+8],S24,0x455A14ED);a=ba(a,b,c,d,x[k+13],S21,0xA9E3E905);d=ba(d,a,b,c,x[k+2],S22,0xFCEFA3F8);c=ba(c,d,a,b,x[k+7],S23,0x676F02D9);b=ba(b,c,d,a,x[k+12],S24,0x8D2A4C8A);
-    a=ca(a,b,c,d,x[k+5],S31,0xFFFA3942);d=ca(d,a,b,c,x[k+8],S32,0x8771F681);c=ca(c,d,a,b,x[k+11],S33,0x6D9D6122);b=ca(b,c,d,a,x[k+14],S34,0xFDE5380C);a=ca(a,b,c,d,x[k+1],S31,0xA4BEEA44);d=ca(d,a,b,c,x[k+4],S32,0x4BDECFA9);c=ca(c,d,a,b,x[k+7],S33,0xF6BB4B60);b=ca(b,c,d,a,x[k+10],S34,0xBEBFBC70);a=ca(a,b,c,d,x[k+13],S31,0x289B7EC6);d=ca(d,a,b,c,x[k],S32,0xEAA127FA);c=ca(c,d,a,b,x[k+3],S33,0xD4EF3085);b=ca(b,c,d,a,x[k+6],S34,0x4881D05);a=ca(a,b,c,d,x[k+9],S31,0xD9D4D039);d=ca(d,a,b,c,x[k+12],S32,0xE6DB99E5);c=ca(c,d,a,b,x[k+15],S33,0x1FA27CF8);b=ca(b,c,d,a,x[k+2],S34,0xC4AC5665);
-    a=da(a,b,c,d,x[k],S41,0xF4292244);d=da(d,a,b,c,x[k+7],S42,0x432AFF97);c=da(c,d,a,b,x[k+14],S43,0xAB9423A7);b=da(b,c,d,a,x[k+5],S44,0xFC93A039);a=da(a,b,c,d,x[k+12],S41,0x655B59C3);d=da(d,a,b,c,x[k+3],S42,0x8F0CCC92);c=da(c,d,a,b,x[k+10],S43,0xFFEFF47D);b=da(b,c,d,a,x[k+1],S44,0x85845DD1);a=da(a,b,c,d,x[k+8],S41,0x6FA87E4F);d=da(d,a,b,c,x[k+15],S42,0xFE2CE6E0);c=da(c,d,a,b,x[k+6],S43,0xA3014314);b=da(b,c,d,a,x[k+13],S44,0x4E0811A1);a=da(a,b,c,d,x[k+4],S41,0xF7537E82);d=da(d,a,b,c,x[k+11],S42,0xBD3AF235);c=da(c,d,a,b,x[k+2],S43,0x2AD7D2BB);b=da(b,c,d,a,x[k+9],S44,0xEB86D391);
-    a=K(a,AA);b=K(b,BB);c=K(c,CC);d=K(d,DD)}
-  return(WordToHex(a)+WordToHex(b)+WordToHex(c)+WordToHex(d)).toLowerCase();
+function normalizePlayerReferer(host) {
+  return "https://" + host.replace(/^https?:\/\//, "").replace(/\/$/, "") + "/";
 }
 
-function requestHash(params) { return md5(JSON.stringify(sortParams(params))).slice(0, 6); }
+function buildHeaders(context) {
+  return {
+    "Referer": context.pageReferer,
+    "Origin": context.pageOrigin,
+    "Accept": "application/json, text/plain, */*",
+    "User-Agent": UA,
+  };
+}
 
-function aesEncrypt(data) {
-  var key = Buffer.from("a7981cc9eb2f4d19dcfea57b101ecd89", "utf8");
-  var iv = Buffer.from("8017d3a8f1400d2f", "utf8");
-  var cipher = createCipheriv("aes-256-cbc", key, iv);
-  var encrypted = Buffer.concat([cipher.update(data, "utf8"), cipher.final()]);
-  return encrypted.toString("base64");
+function parseMatchPagePath(input) {
+  var url;
+  try { url = new URL(input.trim()); } catch { return null; }
+  var parts = url.pathname.split("/").filter(Boolean);
+  var index = 0;
+  if (parts[index] && LOCALE_CODES.has(parts[index])) index += 1;
+  var sportSlug = parts[index];
+  if (!sportSlug) return null;
+  var sportType = SPORT_SLUGS[sportSlug];
+  if (sportType === undefined) return null;
+  var slugSegment = parts[index + 1];
+  if (!slugSegment || slugSegment.indexOf("-") === -1) return null;
+  var cleanSegment = slugSegment.replace(/\.html$/i, "");
+  var matchId = cleanSegment.slice(cleanSegment.lastIndexOf("-") + 1);
+  if (!/^\d+$/.test(matchId)) return null;
+  var pageReferer = url.origin + "/";
+  var metadata = url.searchParams.get("mdata");
+  if (metadata) {
+    try {
+      var normalized = decodeURIComponent(metadata).replace(/\s/g, "");
+      var padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+      var plain = Buffer.from(padded, "base64").toString("utf8");
+      var parts2 = plain.split("_");
+      if (parts2[0] && parts2[1] && /^\d+$/.test(parts2[0])) {
+        return { matchId: parts2[0], sportType: Number(parts2[1]), pageReferer: pageReferer, pageOrigin: url.origin };
+      }
+    } catch {}
+  }
+  return { matchId: matchId, sportType: sportType, pageReferer: pageReferer, pageOrigin: url.origin };
+}
+
+function parseStreamSiteDigitFromPage(pageHtml, pageUrl) {
+  var match;
+  match = pageHtml.match(/layout:"livestream-([^"]+)"/);
+  if (match && match[1]) return match[1];
+  match = pageHtml.match(/DIGIT_ENV['"]\s*:\s*['"]([^'"]+)['"]/);
+  if (match && match[1] && match[1] !== "production" && match[1].length < 10) return match[1];
+  match = pageHtml.match(/cDigit['"]\s*:\s*['"]([^'"]+)['"]/);
+  if (match && match[1] && match[1] !== "production" && match[1].length < 10) return match[1];
+  match = pageHtml.match(/DIGIT_ENV_MIRROR['"]\s*:\s*['"]([^'"]+)['"]/);
+  if (match && match[1] !== "" && match[1].length < 10) return match[1];
+  if (pageHtml.indexOf("fctv33") !== -1 || PLAY_DOMAINS_RE.test(pageUrl || "")) return "foth";
+  throw new Error("stream site digit not found on match page");
+}
+
+function parseDataApiBaseUrlFromPage(pageHtml) {
+  var match = pageHtml.match(/apis-data\d+\.[a-z0-9.-]+/);
+  if (!match) throw new Error("data api host not found on match page");
+  return "https://" + match[0];
+}
+
+function buildPlaySiteUrl(playerDomainBase, pageUrl) {
+  var source = new URL(pageUrl.trim());
+  var target = new URL(playerDomainBase);
+  target.pathname = source.pathname
+    .replace(/-match-(\d+)/, "-$1")
+    .replace(/-\d{2}-\d{4}(\.html)$/i, "$1");
+  target.searchParams.set("icg", "UEs");
+  target.searchParams.set("ilang", source.searchParams.get("ilang") || "en");
+  return target.href;
 }
 
 export default async function handler(req, res) {
@@ -137,100 +203,152 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    var pageUrl = req.query.url;
+    var rawUrl = req.query.url;
     var requestedStreamId = req.query.streamId;
-    if (!pageUrl) return res.status(400).json({ error: "url required" });
+    if (!rawUrl) return res.status(400).json({ error: "url required" });
+    var input = (rawUrl || "").trim();
 
-    var headers = apiHeaders();
-    var parsed = new URL(pageUrl.trim());
-    var mdata = parsed.searchParams.get("mdata");
-    var matchId, sportType;
-    if (mdata) {
-      var padded = decodeURIComponent(mdata) + "=".repeat((4 - decodeURIComponent(mdata).length % 4) % 4);
-      var plain = atob(padded);
-      var parts = plain.split("_");
-      matchId = parts[0]; sportType = Number(parts[1]);
-    } else {
-      var pathParts = parsed.pathname.split("/").filter(Boolean); var si = 0;
-      var localeSet = { en:1, es:1, de:1, fr:1, pt:1, ru:1, it:1, nl:1, pl:1, tr:1, ar:1, zh:1, ja:1, ko:1 };
-      if (pathParts[si] && localeSet[pathParts[si]]) si++;
-      var slugMap = { football:1, basketball:2, tennis:3, baseball:4, cricket:6, motorsport:7, rugby:8, "american-football":9, "aussie-rules":10, hockey:11, badminton:12, volleyball:13, fighting:14, cycling:15, handball:16, others:90 };
-      sportType = slugMap[pathParts[si]] || 1;
-      var slug = (pathParts[si + 1] || "").replace(/\.html$/i, "");
-      matchId = slug.slice(slug.lastIndexOf("-") + 1);
-    }
-
-    var configResp = await httpsGet(API_BASE + "/api/common/params", headers);
-    var configText = rot47(configResp.text());
-    var siteConfig = JSON.parse(configText);
-    var gPlayerDomains = JSON.parse(siteConfig["g_player_domains"] || "{}");
-    var webClients = JSON.parse(siteConfig["common:web:client"] || "{}");
-
-    var playerReferer = REFERER;
-    var streamSiteDigit = "foth";
-    var wh = webClients[streamSiteDigit] && webClients[streamSiteDigit].iframePlayerDomains && webClients[streamSiteDigit].iframePlayerDomains[0];
-    if (wh) { playerReferer = "https://" + wh.replace(/^https?:\/\//, "").replace(/\/$/, "") + "/"; }
-    else {
-      var keys = Object.keys(webClients);
-      for (var i = 0; i < keys.length; i++) { var h = webClients[keys[i]] && webClients[keys[i]].iframePlayerDomains && webClients[keys[i]].iframePlayerDomains[0]; if (h) { playerReferer = "https://" + h.replace(/^https?:\/\//, "").replace(/\/$/, "") + "/"; break; } }
-      if (playerReferer === REFERER) { var fallback = gPlayerDomains[streamSiteDigit]; if (Array.isArray(fallback)) { for (var j = 0; j < fallback.length; j++) { if (/^https?:\/\//i.test(fallback[j])) { playerReferer = "https://" + fallback[j].replace(/^https?:\/\//, "").replace(/\/$/, "") + "/"; break; } } } }
-      if (playerReferer === REFERER) { var gkeys = Object.keys(gPlayerDomains); for (var gi = 0; gi < gkeys.length; gi++) { var arr = gPlayerDomains[gkeys[gi]]; if (Array.isArray(arr)) { for (var gj = 0; gj < arr.length; gj++) { if (/^https?:\/\//i.test(arr[gj])) { playerReferer = "https://" + arr[gj].replace(/^https?:\/\//, "").replace(/\/$/, "") + "/"; break; } } if (playerReferer !== REFERER) break; } } }
-    }
-
-    var codesParam = [102, 103, 104, 105].map(function(c) { return "code=" + c; }).join("&");
-    var sigResp = await httpsGet(API_BASE + "/api/common/bs?stream=true&sportType=" + sportType + "&matchId=" + matchId + "&" + codesParam, headers);
-    var sigEntries = parseSignatures(sigResp.buffer);
-    var sigMap = {};
-    sigEntries.forEach(function(e) { sigMap[e.code] = e.value; });
-
-    var suffix = sigMap[102];
-    if (!suffix) throw new Error("Signature key 102 not found");
-    var detailParams = { matchId: matchId, sportType: sportType, language: 0, stream: true };
-    var hash = requestHash(detailParams);
-    var detailUrl = API_BASE + "/sfver" + hash + suffix + "/api/match/detail?matchId=" + matchId + "&sportType=" + sportType + "&language=0&stream=true";
-    var detailResp = await httpsGet(detailUrl, headers);
-    var matchDetail = parseMatchDetail(detailResp.buffer);
-    var liveStreams = matchDetail.stream.filter(function(s) { return s.streamId; });
-
-    if (!requestedStreamId && liveStreams.length > 1) {
-      return res.status(200).json({ name: "Match " + matchId, matchId: matchId, streams: liveStreams.map(function(s) { return { streamId: s.streamId, name: s.name || "Stream " + s.streamId, siteType: s.siteType }; }), referer: playerReferer });
-    }
-
-    var stream = liveStreams.find(function(s) { return String(s.streamId) === String(requestedStreamId); }) || liveStreams[0];
-    if (!stream) throw new Error("No streams available");
-
-    var digits = Object.keys(webClients);
-    if (digits.length === 0) digits = ["foth"];
-    var signedUrl = null;
-
-    var streamsToTry = [stream].concat(liveStreams.filter(function(s) { return s.streamId !== stream.streamId; }));
-    var seen = {};
-    streamsToTry = streamsToTry.filter(function(s) { if (seen[s.streamId]) return false; seen[s.streamId] = true; return true; });
-
-    for (var si3 = 0; si3 < streamsToTry.length && !signedUrl; si3++) {
-      var tryStream = streamsToTry[si3];
-      for (var di = 0; di < digits.length && !signedUrl; di++) {
-        var digit = digits[di];
-        var streamDetailUrl = API_BASE + "/api/stream/detail?streamId=" + tryStream.streamId + "&matchId=" + matchId + "&sportType=" + sportType + "&siteType=" + tryStream.siteType + "&digit=" + digit;
-        try {
-          var sdResp = await httpsGet(streamDetailUrl, headers);
-          var sdToken = sdResp.headers["rb-session"] || "";
-          var streamDetail = parseStreamDetail(sdResp.buffer);
-          if (!streamDetail.url) continue;
-          var decoded = rot47(streamDetail.url).slice(8);
-          if (!decoded.startsWith("http://") && !decoded.startsWith("https://")) continue;
-          var streamParsed = new URL(decoded);
-          var token = encodeURIComponent(aesEncrypt(sdToken)) + "a";
-          signedUrl = streamParsed.origin + "/token-" + token + streamParsed.pathname + streamParsed.search;
-          stream = tryStream;
-        } catch (e) { /* skip */ }
+    var isM3u8 = input.toLowerCase().indexOf(".m3u8") !== -1;
+    if (isM3u8) {
+      try {
+        var u = new URL(input);
+        var referer = u.searchParams.get("referer") || DEFAULT_REFERER;
+        var clean = new URL(input);
+        clean.searchParams.delete("referer");
+        var name = decodeURIComponent(u.pathname.split("/").pop() || "Brugge").replace(/\.m3u8.*$/i, "") || "XionLive";
+        var origin = new URL(req.url, "https://" + req.headers.host).origin;
+        return res.status(200).json({ name: name, streamUrl: clean.href, referer: referer, playableUrl: origin + "/api/hls?url=" + encodeURIComponent(clean.href) + "&referer=" + encodeURIComponent(referer) });
+      } catch (e) {
+        return res.status(400).json({ error: "invalid m3u8 url" });
       }
     }
 
-    if (!signedUrl) throw new Error("No HTTP stream found for this match");
+    var parsed = parseMatchPagePath(input);
+    if (!parsed) return res.status(400).json({ error: "Could not parse match page URL" });
+    var requestContext = { pageReferer: parsed.pageReferer, pageOrigin: parsed.pageOrigin };
 
-    return res.status(200).json({ name: stream.name || "", streamUrl: signedUrl, playableUrl: signedUrl, referer: playerReferer });
+    var pageResp = await fetch(input, { headers: buildHeaders(requestContext), redirect: "follow" });
+    var pageHtml = await pageResp.text();
+    var dataApiBaseUrl = parseDataApiBaseUrlFromPage(pageHtml);
+    var streamSiteDigit = parseStreamSiteDigitFromPage(pageHtml, input);
+
+    var configResp = await fetch(dataApiBaseUrl + "/api/common/params", { headers: buildHeaders(requestContext) });
+    var configText = rot47(await configResp.text());
+    var siteConfig = JSON.parse(configText);
+    var webClients = JSON.parse(siteConfig["common:web:client"] || "{}");
+    var gPlayerDomains = JSON.parse(siteConfig["g_player_domains"] || "{}");
+
+    var playerDomain = null;
+    var wcKeys = Object.keys(webClients);
+    for (var i = 0; i < wcKeys.length; i++) {
+      var h = webClients[wcKeys[i]] && webClients[wcKeys[i]].iframePlayerDomains && webClients[wcKeys[i]].iframePlayerDomains[0];
+      if (h) { playerDomain = h; break; }
+    }
+    if (!playerDomain) {
+      var gdKeys = Object.keys(gPlayerDomains);
+      for (var gi = 0; gi < gdKeys.length; gi++) {
+        var arr = gPlayerDomains[gdKeys[gi]];
+        if (Array.isArray(arr)) {
+          for (var gj = 0; gj < arr.length; gj++) {
+            if (/^https?:\/\//i.test(arr[gj])) { playerDomain = arr[gj]; break; }
+          }
+          if (playerDomain) break;
+        }
+      }
+    }
+    var playerReferer = playerDomain ? normalizePlayerReferer(playerDomain) : DEFAULT_REFERER;
+
+    var isInputPlayDomain = PLAY_DOMAINS_RE.test(input);
+    if (!isInputPlayDomain && playerDomain && PLAY_DOMAINS_RE.test(playerDomain)) {
+      var playUrl = buildPlaySiteUrl(playerDomain, input);
+      var playPageResp = await fetch(playUrl, { headers: buildHeaders(requestContext), redirect: "follow" });
+      var playPageHtml = await playPageResp.text();
+      dataApiBaseUrl = parseDataApiBaseUrlFromPage(playPageHtml);
+      streamSiteDigit = parseStreamSiteDigitFromPage(playPageHtml, playUrl);
+      var playParsed = new URL(playUrl);
+      requestContext = { pageReferer: playParsed.origin + "/", pageOrigin: playParsed.origin };
+    }
+
+    var geoResp = await fetch(dataApiBaseUrl + "/api/user/info", { headers: buildHeaders(requestContext) });
+    var geoBuf = Buffer.from(await geoResp.arrayBuffer());
+    var geo = parseUserGeo(geoBuf);
+
+    var query = new URLSearchParams();
+    query.set("stream", "true");
+    query.set("sportType", String(parsed.sportType));
+    query.set("matchId", parsed.matchId);
+    for (var ci = 0; ci < SIGNATURE_BOOTSTRAP_CODES.length; ci++) query.append("code", String(SIGNATURE_BOOTSTRAP_CODES[ci]));
+    var sigResp = await fetch(dataApiBaseUrl + "/api/common/bs?" + query.toString(), { headers: buildHeaders(requestContext) });
+    var sigBuf = Buffer.from(await sigResp.arrayBuffer());
+    var sigEnv = parseApiEnvelope(sigBuf);
+    if (sigEnv.message !== "Success") throw new Error("signature bootstrap failed: " + sigEnv.message);
+    var signatureKeys = new Map();
+    sigEnv.payload.forEach(function(chunk) { parseSignatureEntries(chunk).forEach(function(entry) { signatureKeys.set(entry.code, entry.value); }); });
+
+    var suffix = signatureKeys.get(MATCH_DETAIL_SIGNATURE_CODE);
+    if (!suffix) throw new Error("missing body signature");
+
+    var detailQuery = sortRequestParams({ matchId: parsed.matchId, sportType: parsed.sportType, language: 0, stream: true });
+    var qs = new URLSearchParams();
+    for (var dk in detailQuery) qs.set(dk, String(detailQuery[dk]));
+    var detailUrl = dataApiBaseUrl + "/sfver" + requestHashPrefix({ matchId: parsed.matchId, sportType: parsed.sportType, language: 0, stream: true }) + suffix + "/api/match/detail?" + qs.toString();
+    var detailResp = await fetch(detailUrl, { headers: buildHeaders(requestContext) });
+    var detailBuf = Buffer.from(await detailResp.arrayBuffer());
+    var match = parseMatchDetail(detailBuf);
+    var liveStreams = match.stream.filter(function(s) { return s.streamId; });
+    if (!liveStreams.length) throw new Error("no stream on match (not live yet?)");
+
+    if (!requestedStreamId && input.indexOf("?") !== -1) {
+      try { requestedStreamId = new URL(input).searchParams.get("streamId"); } catch {}
+    }
+
+    if (!requestedStreamId) {
+      return res.status(200).json({
+        name: "Match " + parsed.matchId,
+        matchId: parsed.matchId,
+        streams: liveStreams.map(function(s) { return { streamId: s.streamId, name: s.name || "Stream " + s.streamId, siteType: s.siteType }; }),
+        referer: playerReferer,
+      });
+    }
+
+    var stream = liveStreams.find(function(s) { return String(s.streamId) === String(requestedStreamId); }) || liveStreams[0];
+    if (!stream) throw new Error("stream not found");
+
+    var streamDetailUrl = new URL(dataApiBaseUrl + "/api/stream/detail");
+    streamDetailUrl.searchParams.set("streamId", stream.streamId);
+    streamDetailUrl.searchParams.set("matchId", parsed.matchId);
+    streamDetailUrl.searchParams.set("sportType", String(parsed.sportType));
+    streamDetailUrl.searchParams.set("siteType", String(stream.siteType));
+    streamDetailUrl.searchParams.set("digit", streamSiteDigit);
+    if (geo.continent) streamDetailUrl.searchParams.set("continent", geo.continent);
+    if (geo.country) streamDetailUrl.searchParams.set("country", geo.country);
+    var sdResp = await fetch(streamDetailUrl.toString(), { headers: buildHeaders(requestContext) });
+    var sdBuf = Buffer.from(await sdResp.arrayBuffer());
+    var sdEnvelope = parseApiEnvelope(sdBuf);
+    if (sdEnvelope.message !== "Success") throw new Error("stream detail failed: " + sdEnvelope.message);
+    var sessionToken = sdResp.headers.get("rb-session");
+    if (!sessionToken) throw new Error("stream detail missing session token");
+    var detail = parseStreamDetail(sdBuf);
+    if (!detail.url) throw new Error("stream detail missing url");
+
+    var decoded = rot47(detail.url).slice(8);
+    if (!decoded.startsWith("http://") && !decoded.startsWith("https://")) throw new Error("stream URL not HTTP");
+    var streamParsed = new URL(decoded);
+    var cipher = createCipheriv("aes-256-cbc", Buffer.from("a7981cc9eb2f4d19dcfea57b101ecd89", "utf8"), Buffer.from("8017d3a8f1400d2f", "utf8"));
+    var encrypted = Buffer.concat([cipher.update(sessionToken, "utf8"), cipher.final()]);
+    var token = encodeURIComponent(encrypted.toString("base64")) + "a";
+    var signedUrl = streamParsed.origin + "/token-" + token + streamParsed.pathname + streamParsed.search;
+
+    var origin = new URL(req.url, "https://" + req.headers.host).origin;
+    var playableUrl = origin + "/api/hls?url=" + encodeURIComponent(signedUrl) + "&referer=" + encodeURIComponent(playerReferer);
+
+    return res.status(200).json({
+      name: stream.name || "Brugge " + parsed.matchId,
+      streamUrl: signedUrl,
+      referer: playerReferer,
+      playableUrl: playableUrl,
+    });
   } catch (e) {
-    return res.status(502).json({ error: e.message || String(e) });
+    return res.status(502).json({ error: e instanceof Error ? e.message : "resolve failed" });
   }
 }
