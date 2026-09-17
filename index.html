@@ -372,19 +372,21 @@
       var defaultReferer = 'https://jack27eo.mpgreatestclgczbmiddle.my/';
       if (mode==='m3u8'||(mode==='auto'&&isM3u8(url))) {
         var sn=url.split('/').pop().split('?')[0]||'stream';
-        currentData={playableUrl:url,directUrl:url,referer:defaultReferer,name:sn,inputUrl:url};
-        addToHistory(sn,url,url); startPlayback(url,sn); playBtn.disabled=false; playBtn.textContent='Play';
+        var proxyUrl='/api/hls?url='+encodeURIComponent(url)+'&referer='+encodeURIComponent(defaultReferer);
+        currentData={playableUrl:proxyUrl,directUrl:url,referer:defaultReferer,name:sn,inputUrl:url};
+        addToHistory(sn,url,proxyUrl); startPlayback(proxyUrl,sn); playBtn.disabled=false; playBtn.textContent='Play';
       } else if (mode==='match'||(mode==='auto'&&isMatchPage(url))) {
         window.resolveXionMatch(url)
         .then(function(d){
           currentData={playableUrl:d.playableUrl,directUrl:d.streamUrl||url,referer:d.referer||defaultReferer,name:d.name||'Match',inputUrl:url};
-          addToHistory(d.name||'Match',url,d.playableUrl,d.streamUrl);startPlayback(d.streamUrl||d.playableUrl,d.name||'Match')
+          addToHistory(d.name||'Match',url,d.playableUrl);startPlayback(d.playableUrl,d.name||'Match')
         })
         .catch(function(e){showError(e.message||'Failed')}).finally(function(){playBtn.disabled=false;playBtn.textContent='Play'});
       } else {
         var sn=url.split('/').pop().split('?')[0]||'stream';
-        currentData={playableUrl:url,directUrl:url,referer:defaultReferer,name:sn,inputUrl:url};
-        addToHistory(sn,url,url); startPlayback(url,sn); playBtn.disabled=false; playBtn.textContent='Play';
+        var proxyUrl='/api/hls?url='+encodeURIComponent(url)+'&referer='+encodeURIComponent(defaultReferer);
+        currentData={playableUrl:proxyUrl,directUrl:url,referer:defaultReferer,name:sn,inputUrl:url};
+        addToHistory(sn,url,proxyUrl); startPlayback(proxyUrl,sn); playBtn.disabled=false; playBtn.textContent='Play';
       }
     }
 
@@ -421,13 +423,13 @@
 
     function resolveAndPlay(match,streamId,listData) {
       window.resolveXionMatch(match.url, streamId)
-      .then(function(d){currentData={playableUrl:d.playableUrl,directUrl:d.streamUrl||match.url,referer:d.referer||'',name:d.name||match.name,inputUrl:match.url};addToHistory(d.name||match.name,match.url,d.playableUrl,d.streamUrl);markPlayed(match.matchId);startPlayback(d.streamUrl||d.playableUrl,d.name||match.name);urlInput.value=match.url})
+      .then(function(d){currentData={playableUrl:d.playableUrl,directUrl:d.streamUrl||match.url,referer:d.referer||'',name:d.name||match.name,inputUrl:match.url};addToHistory(d.name||match.name,match.url,d.playableUrl);markPlayed(match.matchId);startPlayback(d.playableUrl,d.name||match.name);urlInput.value=match.url})
       .catch(function(e){showError(e.message||'Failed')}).finally(function(){resolvingMatchId=null;renderMatches();renderMobileMatches()});
     }
 
     function resolveAndPlayDirect(d,match) {
       currentData={playableUrl:d.playableUrl,directUrl:d.streamUrl||match.url,referer:d.referer||'',name:d.name||match.name,inputUrl:match.url};
-      addToHistory(d.name||match.name,match.url,d.playableUrl,d.streamUrl);markPlayed(match.matchId);startPlayback(d.streamUrl||d.playableUrl,d.name||match.name);urlInput.value=match.url;
+      addToHistory(d.name||match.name,match.url,d.playableUrl);markPlayed(match.matchId);startPlayback(d.playableUrl,d.name||match.name);urlInput.value=match.url;
       resolvingMatchId=null;renderMatches();renderMobileMatches();
     }
 
@@ -444,51 +446,29 @@
      function startPlayback(url,name) {
       if(hls){hls.destroy();hls=null}
       video.style.display='block';playerEmpty.style.display='none';playerBar.style.display='flex';streamInfo.textContent=name;
-      console.log('[xion] startPlayback url:', url);
-      var ref = (currentData && currentData.referer) ? currentData.referer : 'https://jack27eo.mpgreatestclgczbmiddle.my/';
-      var PROXY = '/api/hls?url='+encodeURIComponent(url)+'&referer='+encodeURIComponent(ref);
+      console.log('[xion] startPlayback url:', url.substring(0,120));
       if(Hls.isSupported()){
-        function ProxyLoader(cfg){this.config=cfg}
-        ProxyLoader.prototype.destroy=function(){};
-        ProxyLoader.prototype.abort=function(){};
-        ProxyLoader.prototype.load=function(context,cfg,cb){
-          var reqUrl=context.url;
-          var pUrl='/api/hls?url='+encodeURIComponent(reqUrl)+'&referer='+encodeURIComponent(ref);
-          console.log('[xion] loader proxy:',reqUrl.substring(0,100));
-          fetch(pUrl).then(function(r){
-            if(!r.ok){return r.text().then(function(t){throw new Error('HTTP '+r.status+': '+t.substring(0,200))})}
-            return r.arrayBuffer().then(function(data){
-              console.log('[xion] loader ok:',reqUrl.substring(0,80),'bytes:',data.byteLength);
-              cb.onSuccess({url:reqUrl,data:data,status:r.status},{loading:true,start:Date.now(),first:Date.now(),end:Date.now()},context,null);
-            });
-          }).catch(function(e){
-            console.error('[xion] loader error:',reqUrl.substring(0,80),e);
-            cb.onError({code:0,message:e.message||'proxy fetch failed'},context,null);
-          });
-        };
         hls=new Hls({
           enableWorker:true,lowLatencyMode:true,backBufferLength:30,maxBufferLength:60,maxMaxBufferLength:120,
           startFragPrefetch:true,liveSyncDurationCount:4,liveMaxLatencyDurationCount:8,liveDurationInfinity:true,
-          highBufferWatchdogPeriod:2,overrideNative:true,
-          loader:ProxyLoader
+          highBufferWatchdogPeriod:2,overrideNative:true
         });
         hls.loadSource(url);hls.attachMedia(video);
         hls.on(Hls.Events.MANIFEST_PARSED,function(){console.log('[xion] HLS manifest parsed');video.play().catch(function(e){console.warn('[xion] autoplay blocked:',e.message)})});
         hls.on(Hls.Events.ERROR,function(_,d){console.error('[xion] HLS error:',d.type,d.details,d.fatal);if(d.fatal){if(d.type===Hls.ErrorTypes.NETWORK_ERROR){showError('Network error: '+d.details);hls.startLoad()}else showError('Playback error: '+d.details)}});
       } else {
-        console.log('[xion] native player via proxy:', PROXY.substring(0,120));
+        console.log('[xion] native player url:', url.substring(0,120));
         video.onloadeddata = function(){ console.log('[xion] video loaded'); video.play().catch(function(e){console.warn('[xion] native play failed:',e.message);showError('Play failed: '+e.message)})};
         video.onerror = function(){
           var err=video.error;
           var code=err?err.code:0;
           var msg='Error '+code+': '+(err?err.message:'unknown');
           console.error('[xion]',msg,'url:',url);
-          fetch(PROXY).then(function(r){
+          fetch(url).then(function(r){
             return r.text().then(function(t){
               var info='Video: '+msg;
-              info+='\n\nURL: '+url.substring(0,150);
-              info+='\nReferer: '+ref.substring(0,100);
-              info+='\nProxy: HTTP '+r.status;
+              info+='\n\nURL: '+url.substring(0,200);
+              info+='\nHTTP: '+r.status;
               info+='\nContent-Type: '+(r.headers.get('content-type')||'?');
               info+='\nSize: '+t.length+' bytes';
               if(t.length<1500) info+='\n\n'+t;
@@ -496,10 +476,10 @@
               showError(info);
             });
           }).catch(function(e){
-            showError(msg+'\n\nURL: '+url.substring(0,150)+'\nProxy fetch error: '+e.message);
+            showError(msg+'\n\nURL: '+url.substring(0,200)+'\nFetch error: '+e.message);
           });
         };
-        video.src = PROXY;
+        video.src = url;
       }
     }
 
@@ -691,8 +671,8 @@
     document.getElementById('matches-list').addEventListener('click',function(e){var item=e.target.closest('.match-item');if(item)playMatch(parseInt(item.getAttribute('data-match-idx'),10))});
     document.getElementById('m-matches-list').addEventListener('click',function(e){var item=e.target.closest('.match-item');if(item)playMatch(parseInt(item.getAttribute('data-match-idx'),10))});
 
-    function addToHistory(name,inputUrl,playableUrl,streamUrl) {
-      var item={name:name,inputUrl:inputUrl,playableUrl:playableUrl,streamUrl:streamUrl||playableUrl,time:Date.now()};
+    function addToHistory(name,inputUrl,playableUrl) {
+      var item={name:name,inputUrl:inputUrl,playableUrl:playableUrl,time:Date.now()};
       streamHistory=streamHistory.filter(function(h){return h.inputUrl!==inputUrl});
       streamHistory.unshift(item);if(streamHistory.length>30)streamHistory=streamHistory.slice(0,30);
       localStorage.setItem('xion_history',JSON.stringify(streamHistory));
@@ -715,11 +695,11 @@
 
     document.getElementById('history-list').addEventListener('click',function(e){
       var rb=e.target.closest('[data-remove-hist]');if(rb){e.stopPropagation();streamHistory.splice(parseInt(rb.getAttribute('data-remove-hist'),10),1);localStorage.setItem('xion_history',JSON.stringify(streamHistory));renderHistory();renderMobileHistory();return}
-      var item=e.target.closest('.sidebar-item');if(item){var h=streamHistory[parseInt(item.getAttribute('data-hist-idx'),10)];if(h){urlInput.value=h.inputUrl;currentData=h;startPlayback(h.streamUrl||h.playableUrl,h.name)}}
+      var item=e.target.closest('.sidebar-item');if(item){var h=streamHistory[parseInt(item.getAttribute('data-hist-idx'),10)];if(h){urlInput.value=h.inputUrl;currentData=h;startPlayback(h.playableUrl,h.name)}}
     });
     document.getElementById('m-history-list').addEventListener('click',function(e){
       var rb=e.target.closest('[data-mremove-hist]');if(rb){e.stopPropagation();streamHistory.splice(parseInt(rb.getAttribute('data-mremove-hist'),10),1);localStorage.setItem('xion_history',JSON.stringify(streamHistory));renderHistory();renderMobileHistory();return}
-      var item=e.target.closest('.sidebar-item');if(item){var h=streamHistory[parseInt(item.getAttribute('data-mhist-idx'),10)];if(h){urlInput.value=h.inputUrl;currentData=h;startPlayback(h.streamUrl||h.playableUrl,h.name);closeMobilePanel()}}
+      var item=e.target.closest('.sidebar-item');if(item){var h=streamHistory[parseInt(item.getAttribute('data-mhist-idx'),10)];if(h){urlInput.value=h.inputUrl;currentData=h;startPlayback(h.playableUrl,h.name);closeMobilePanel()}}
     });
 
     function clearHistory(){streamHistory=[];localStorage.removeItem('xion_history');renderHistory();renderMobileHistory()}
