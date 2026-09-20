@@ -4,6 +4,9 @@ export const config = { api: { responseLimit: false, maxDuration: 60 } };
 
 var UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 var DEFAULT_REFERER = "https://jack27eo.mpgreatestclgczbmiddle.my/";
+function isChallengeText(text) {
+  return typeof text === "string" && text.slice(0, 4096).indexOf("Just a moment") !== -1;
+}
 var PLAY_DOMAINS_RE = /fctv33|fctv|rbtv|rbsports|superabbit|madplay|hubu\.ru|mpgreatestclgczbmiddle|tm3troops31patrol|tcdru136ovur|2wc4tool8utphnumber|8l3duspoken587uclock|tn76degree12ec3out|fut0newsiryroquite/i;
 
 var SPORT_SLUGS = { football:1, basketball:2, tennis:3, baseball:4, cricket:6, motorsport:7, rugby:8, "american-football":9, "aussie-rules":10, hockey:11, badminton:12, volleyball:13, fighting:14, cycling:15, handball:16, others:90 };
@@ -229,11 +232,18 @@ export default async function handler(req, res) {
 
     var pageResp = await fetch(input, { headers: buildHeaders(requestContext), redirect: "follow" });
     var pageHtml = await pageResp.text();
+    if (isChallengeText(pageHtml)) throw new Error("Upstream blocked this server (Cloudflare challenge). Retry in a moment.");
+    try {
+      var finalOrigin = new URL(pageResp.url || input).origin;
+      requestContext = { pageReferer: finalOrigin + "/", pageOrigin: finalOrigin };
+    } catch (e2) {}
     var dataApiBaseUrl = parseDataApiBaseUrlFromPage(pageHtml);
     var streamSiteDigit = parseStreamSiteDigitFromPage(pageHtml, input);
 
     var configResp = await fetch(dataApiBaseUrl + "/api/common/params", { headers: buildHeaders(requestContext) });
-    var configText = rot47(await configResp.text());
+    var configRaw = await configResp.text();
+    if (isChallengeText(configRaw)) throw new Error("Upstream blocked this server (Cloudflare challenge). Retry in a moment.");
+    var configText = rot47(configRaw);
     var siteConfig = JSON.parse(configText);
     var webClients = JSON.parse(siteConfig["common:web:client"] || "{}");
     var gPlayerDomains = JSON.parse(siteConfig["g_player_domains"] || "{}");
@@ -349,6 +359,11 @@ export default async function handler(req, res) {
       playableUrl: playableUrl,
     });
   } catch (e) {
-    return res.status(502).json({ error: e instanceof Error ? e.message : "resolve failed" });
+    var msg = e instanceof Error ? e.message : "resolve failed";
+    var blocked = /Cloudflare|blocked this server/i.test(msg);
+    return res.status(blocked ? 503 : 502).json({
+      error: msg,
+      hint: blocked ? "Temporary upstream rate-limit. Please retry in a few seconds." : undefined,
+    });
   }
 }

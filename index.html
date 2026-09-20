@@ -586,15 +586,46 @@
     }
 
     var API_HOSTS = [
+      'https://apis-data10.tcllu137fien.ru',
+      'https://apis-data11.tcllu137fien.ru',
       'https://apis-data10.tcdru136ovur.ru',
-      'https://apis-data8.tcdru136ovur.ru',
-      'https://apis-data11.tcdru136ovur.ru'
+      'https://apis-data8.tcdru136ovur.ru'
     ];
+    var SITE_ORIGINS = ['https://www.fctv33hd.pw', 'https://www.fctv33hd.fun'];
+    var hostDiscovered = false;
+    function discoverApiHost() {
+      if (hostDiscovered) return Promise.resolve();
+      hostDiscovered = true;
+      var foundAny = false;
+      var chain = Promise.resolve();
+      SITE_ORIGINS.forEach(function(site) {
+        chain = chain.then(function() {
+          if (foundAny) return;
+          return fetch(site + '/nl/football.html', { redirect: 'follow' })
+            .then(function(r) { return r.ok ? r.text() : ''; })
+            .then(function(html) {
+              var found = html && html.match(/apis-data[0-9]+[.][a-z0-9.-]+/g);
+              if (found && found.length) {
+                found.reverse().forEach(function(h) {
+                  var u = 'https://' + h;
+                  if (API_HOSTS.indexOf(u) === -1) API_HOSTS.unshift(u);
+                });
+                API_HEADERS.Referer = site + '/';
+                API_HEADERS.Origin = site;
+                foundAny = true;
+                console.log('[xion] discovered live API host:', API_HOSTS[0]);
+              }
+            })
+            .catch(function() {});
+        });
+      });
+      return chain;
+    }
     var SPORT_TYPES = [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 90];
     var API_HEADERS = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-      'Referer': 'https://jack27eo.mpgreatestclgczbmiddle.my/',
-      'Origin': 'https://jack27eo.mpgreatestclgczbmiddle.my'
+      'Referer': 'https://www.fctv33hd.pw/',
+      'Origin': 'https://www.fctv33hd.pw'
     };
 
     function loadMatches() {
@@ -605,6 +636,7 @@
       console.log('[xion] loadMatches: fetching directly from API');
 
       var workingHost = null;
+      try { workingHost = localStorage.getItem('xion_working_host') || null; if (workingHost && API_HOSTS.indexOf(workingHost) === -1) API_HOSTS.unshift(workingHost); } catch(e) {}
       var allMatches = [];
       var completed = 0;
       var total = 0;
@@ -632,6 +664,7 @@
             var matches = window.parseMatchesFromBuffer(buf, sport);
             console.log('[xion] host=' + hostIdx + ' sport=' + sport + ' got ' + matches.length + ' matches');
             if (!workingHost) workingHost = host;
+            try { localStorage.setItem('xion_working_host', workingHost); } catch(e) {}
             for (var i = 0; i < matches.length; i++) {
               allMatches.push(matches[i]);
             }
@@ -659,6 +692,13 @@
       }
 
       function finishLoad() {
+        if (!allMatches.length && !matchData.length) {
+          var msg = 'Upstream busy — retrying…';
+          count.textContent = msg;
+          mcount.textContent = msg;
+          setTimeout(loadMatches, 20000);
+          return;
+        }
         var nids = {};
         for (var i = 0; i < allMatches.length; i++) nids[allMatches[i].matchId] = true;
         var merged = [];
@@ -673,7 +713,7 @@
           if (!ex) merged.push(allMatches[i]);
         }
         matchData = merged;
-        var txt = matchData.length + ' live match' + (matchData.length !== 1 ? 'es' : '');
+        var txt = matchData.length + ' live match' + (matchData.length !== 1 ? 'es' : '') + (allMatches.length ? '' : ' (cached)');
         count.textContent = txt;
         mcount.textContent = txt;
         renderMatches();
@@ -775,28 +815,32 @@
 
     (function checkServer(){
       var el = document.getElementById('server-status');
-      el.textContent='Checking API...';
-      var url = API_HOSTS[0] + '/api/match/live?sportType=1';
-      var controller = new AbortController();
-      var timeout = setTimeout(function() { controller.abort(); }, 5000);
-      fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
-        .then(function(r) {
-          clearTimeout(timeout);
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.arrayBuffer();
-        })
-        .then(function(buf) {
-          var matches = window.parseMatchesFromBuffer(buf, 1);
-          el.textContent='API OK (' + matches.length + ' football)';
-          el.classList.add('on');
-        })
-        .catch(function(e) {
-          console.error('[xion] API check failed:', e.message);
-          el.textContent='API offline: '+e.message;
-        });
+      el.textContent = 'Checking API...';
+      function run() {
+        var url = API_HOSTS[0] + '/api/match/live?sportType=1';
+        var controller = new AbortController();
+        var timeout = setTimeout(function() { controller.abort(); }, 8000);
+        fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
+          .then(function(r) {
+            clearTimeout(timeout);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.arrayBuffer();
+          })
+          .then(function(buf) {
+            var matches = window.parseMatchesFromBuffer(buf, 1);
+            el.textContent = matches.length ? ('API OK (' + matches.length + ' football)') : 'API OK';
+            el.classList.add('on');
+          })
+          .catch(function(e) {
+            console.error('[xion] API check failed:', e.message);
+            el.textContent = 'Upstream busy — retrying…';
+            setTimeout(run, 30000);
+          });
+      }
+      discoverApiHost().then(run);
     })();
 
-    renderHistory();renderMobileHistory();loadMatches();setInterval(loadMatches,30000);
+    renderHistory();renderMobileHistory();discoverApiHost().then(loadMatches);setInterval(function(){ discoverApiHost().then(loadMatches); },30000);
 
     /* === MOBILE TOUCH GESTURES === */
     (function() {
