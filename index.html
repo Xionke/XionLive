@@ -622,6 +622,18 @@
       return chain;
     }
     var SPORT_TYPES = [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 90];
+    var FETCH_MODE = 'auto'; // 'direct' = visitor's browser hits the API itself, 'proxy' = via our server
+    function tryDirectFetch(url, timeoutMs) {
+      var controller = new AbortController();
+      var t = setTimeout(function() { controller.abort(); }, timeoutMs || 7000);
+      return fetch(url, { signal: controller.signal, mode: 'cors', credentials: 'omit' })
+        .then(function(r) {
+          clearTimeout(t);
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.arrayBuffer();
+        })
+        .catch(function(e) { clearTimeout(t); throw e; });
+    }
     var API_HEADERS = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
       'Referer': 'https://www.fctv33hd.pw/',
@@ -649,17 +661,25 @@
         var host = API_HOSTS[hostIdx];
         var sport = SPORT_TYPES[sportIdx];
         var url = host + '/api/match/live?sportType=' + sport;
-        console.log('[xion] fetching ' + url);
+        console.log('[xion] fetching ' + url + ' mode=' + FETCH_MODE);
 
         var controller = new AbortController();
-        var timeout = setTimeout(function() { controller.abort(); }, 5000);
+        var timeout = setTimeout(function() { controller.abort(); }, 12000);
 
-        fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
-          .then(function(r) {
-            clearTimeout(timeout);
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            return r.arrayBuffer();
-          })
+        function viaProxy() {
+          FETCH_MODE = 'proxy';
+          return fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
+        }
+        var p;
+        if (FETCH_MODE === 'direct') {
+          p = tryDirectFetch(url).catch(viaProxy);
+        } else if (FETCH_MODE === 'proxy') {
+          p = viaProxy();
+        } else {
+          p = tryDirectFetch(url).then(function(buf) { FETCH_MODE = 'direct'; return buf; }).catch(viaProxy);
+        }
+        p
           .then(function(buf) {
             var matches = window.parseMatchesFromBuffer(buf, sport);
             console.log('[xion] host=' + hostIdx + ' sport=' + sport + ' got ' + matches.length + ' matches');
@@ -813,25 +833,26 @@
 
     urlInput.addEventListener('keydown',function(e){if(e.key==='Enter')handlePlay()});
 
-    (function checkServer(){
+        (function checkServer(){
       var el = document.getElementById('server-status');
       el.textContent = 'Checking API...';
       function run() {
         var url = API_HOSTS[0] + '/api/match/live?sportType=1';
         var controller = new AbortController();
-        var timeout = setTimeout(function() { controller.abort(); }, 8000);
-        fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
-          .then(function(r) {
-            clearTimeout(timeout);
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            return r.arrayBuffer();
-          })
+        var timeout = setTimeout(function() { controller.abort(); }, 9000);
+        var probe = tryDirectFetch(url, 8000).catch(function() {
+          return fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
+        });
+        probe
           .then(function(buf) {
+            clearTimeout(timeout);
             var matches = window.parseMatchesFromBuffer(buf, 1);
             el.textContent = matches.length ? ('API OK (' + matches.length + ' football)') : 'API OK';
             el.classList.add('on');
           })
           .catch(function(e) {
+            clearTimeout(timeout);
             console.error('[xion] API check failed:', e.message);
             el.textContent = 'Upstream busy — retrying…';
             setTimeout(run, 30000);
