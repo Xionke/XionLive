@@ -16,6 +16,17 @@ function cacheKey(url) {
   try { var u = new URL(url); return u.pathname + (u.search || ""); } catch (e) { return url; }
 }
 
+// Residential/anti-bot service fallback: only used when direct + crowd cache both fail.
+function serviceUrl(url) {
+  var k;
+  if ((k = process.env.SCRAPERAPI_KEY)) return "https://api.scraperapi.com/?api_key=" + k + "&url=" + encodeURIComponent(url);
+  if ((k = process.env.SCRAPINGBEE_KEY)) return "https://app.scrapingbee.com/api/v1/?api_key=" + k + "&url=" + encodeURIComponent(url) + "&premium_proxy=true&transparent_headers=true";
+  if ((k = process.env.SCRAPERBOX_KEY)) return "https://api.scraperbox.com/v2/scrape?token=" + k + "&url=" + encodeURIComponent(url) + "&javascript_render=false";
+  if ((k = process.env.SCRAPE_DO_KEY)) return "https://api.scrape.do?token=" + k + "&url=" + encodeURIComponent(url);
+  if ((k = process.env.ZENROWS_KEY)) return "https://api.zenrows.com/v1/?apikey=" + k + "&url=" + encodeURIComponent(url) + "&proxy=residential";
+  return null;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -53,6 +64,23 @@ export default async function handler(req, res) {
         if (ce.ct) res.setHeader("Content-Type", ce.ct);
         res.setHeader("X-Cache", "crowd-hit");
         return res.status(200).send(Buffer.from(ce.buf));
+      }
+      var sUrl = serviceUrl(url);
+      if (sUrl) {
+        try {
+          var ac = new AbortController();
+          var st = setTimeout(function () { ac.abort(); }, 25000);
+          var sResp = await fetch(sUrl, { headers: { "User-Agent": UA }, signal: ac.signal });
+          clearTimeout(st);
+          var sBuf = new Uint8Array(await sResp.arrayBuffer());
+          var sHead = new TextDecoder().decode(sBuf.subarray(0, Math.min(sBuf.length, 4096)));
+          if (sResp.ok && !isChallengeText(sHead) && sBuf.length > 2) {
+            try { CACHE[cacheKey(url)] = { buf: sBuf, ct: sResp.headers.get("content-type"), ts: Date.now() }; } catch (ce2) {}
+            if (sResp.headers.get("content-type")) res.setHeader("Content-Type", sResp.headers.get("content-type"));
+            res.setHeader("X-Cache", "service");
+            return res.status(200).send(Buffer.from(sBuf));
+          }
+        } catch (se2) {}
       }
       return res.status(502).json({
         error: lastErr ? lastErr.message : "upstream failed",
