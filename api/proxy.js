@@ -23,7 +23,7 @@ function serviceUrl(url) {
   if ((k = process.env.SCRAPINGBEE_KEY)) return "https://app.scrapingbee.com/api/v1/?api_key=" + k + "&url=" + encodeURIComponent(url) + "&premium_proxy=true&transparent_headers=true";
   if ((k = process.env.SCRAPERBOX_KEY)) return "https://api.scraperbox.com/v2/scrape?token=" + k + "&url=" + encodeURIComponent(url) + "&javascript_render=false";
   if ((k = process.env.SCRAPE_DO_KEY)) return "https://api.scrape.do?token=" + k + "&url=" + encodeURIComponent(url);
-  if ((k = process.env.ZENROWS_KEY)) return "https://api.zenrows.com/v1/?apikey=" + k + "&url=" + encodeURIComponent(url) + "&proxy=residential";
+  if ((k = process.env.ZENROWS_KEY)) return "https://api.zenrows.com/v1/?apikey=" + k + "&url=" + encodeURIComponent(url) + "&antibot=true";
   return null;
 }
 
