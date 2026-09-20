@@ -640,7 +640,7 @@
       'Origin': 'https://www.fctv33hd.pw'
     };
 
-    function loadMatches() {
+        function loadMatches() {
       var count = document.getElementById('match-count');
       var mcount = document.getElementById('m-match-count');
       count.textContent = 'Loading...';
@@ -650,65 +650,17 @@
       var workingHost = null;
       try { workingHost = localStorage.getItem('xion_working_host') || null; if (workingHost && API_HOSTS.indexOf(workingHost) === -1) API_HOSTS.unshift(workingHost); } catch(e) {}
       var allMatches = [];
-      var completed = 0;
-      var total = 0;
+      var pending = SPORT_TYPES.length;
 
-      function tryHost(hostIdx, sportIdx) {
-        if (hostIdx >= API_HOSTS.length) {
-          finishLoad();
-          return;
-        }
-        var host = API_HOSTS[hostIdx];
-        var sport = SPORT_TYPES[sportIdx];
-        var url = host + '/api/match/live?sportType=' + sport;
-        console.log('[xion] fetching ' + url + ' mode=' + FETCH_MODE);
-
-        var controller = new AbortController();
-        var timeout = setTimeout(function() { controller.abort(); }, 12000);
-
-        function viaProxy() {
-          FETCH_MODE = 'proxy';
-          return fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
-            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
-        }
-        var p;
-        if (FETCH_MODE === 'direct') {
-          p = tryDirectFetch(url).catch(viaProxy);
-        } else if (FETCH_MODE === 'proxy') {
-          p = viaProxy();
-        } else {
-          p = tryDirectFetch(url).then(function(buf) { FETCH_MODE = 'direct'; return buf; }).catch(viaProxy);
-        }
-        p
-          .then(function(buf) {
-            var matches = window.parseMatchesFromBuffer(buf, sport);
-            console.log('[xion] host=' + hostIdx + ' sport=' + sport + ' got ' + matches.length + ' matches');
-            if (!workingHost) workingHost = host;
-            try { localStorage.setItem('xion_working_host', workingHost); } catch(e) {}
-            for (var i = 0; i < matches.length; i++) {
-              allMatches.push(matches[i]);
-            }
-            completed++;
-            nextSportOrHost();
-          })
-          .catch(function(e) {
-            clearTimeout(timeout);
-            console.warn('[xion] fetch failed host=' + hostIdx + ' sport=' + sport + ': ' + e.message);
-            if (sportIdx === 0) {
-              tryHost(hostIdx + 1, 0);
-            } else {
-              nextSportOrHost();
-            }
-          });
+      function orderedHosts() {
+        var hs = API_HOSTS.slice();
+        if (workingHost) { var i = hs.indexOf(workingHost); if (i > 0) { hs.splice(i, 1); hs.unshift(workingHost); } }
+        return hs;
       }
 
-      function nextSportOrHost() {
-        var nextIdx = completed;
-        if (nextIdx >= SPORT_TYPES.length) {
-          finishLoad();
-          return;
-        }
-        tryHost(workingHost ? API_HOSTS.indexOf(workingHost) : 0, nextIdx);
+      function sportDone() {
+        pending--;
+        if (pending <= 0) finishLoad();
       }
 
       function finishLoad() {
@@ -740,8 +692,54 @@
         renderMobileMatches();
       }
 
-      total = SPORT_TYPES.length;
-      tryHost(0, 0);
+      function fetchSport(sportIdx, hostIdx, useProxy) {
+        if (hostIdx >= API_HOSTS.length) { sportDone(); return; }
+        var host = orderedHosts()[hostIdx];
+        var sport = SPORT_TYPES[sportIdx];
+        var url = host + '/api/match/live?sportType=' + sport;
+        console.log('[xion] fetching ' + url + ' mode=' + (useProxy ? 'proxy' : FETCH_MODE));
+
+        var controller = new AbortController();
+        var timeout = setTimeout(function() { controller.abort(); }, 12000);
+        var usedProxy = false;
+
+        function viaProxy() {
+          usedProxy = true;
+          return fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
+        }
+
+        var p;
+        if (useProxy || FETCH_MODE === 'proxy') {
+          p = viaProxy();
+        } else {
+          p = tryDirectFetch(url).catch(viaProxy);
+        }
+        p.then(function(buf) {
+          clearTimeout(timeout);
+          var u8 = new Uint8Array(buf.slice(0, 32)); var sniff = '';
+          for (var si = 0; si < u8.length; si++) sniff += String.fromCharCode(u8[si]);
+          if (sniff.charAt(0) === '<' || sniff.indexOf('Just a moment') !== -1) throw new Error('challenge html');
+          var matches = [];
+          try { matches = window.parseMatchesFromBuffer(buf, sport) || []; } catch(pe) { matches = []; }
+          console.log('[xion] host=' + host + ' sport=' + sport + ' got ' + matches.length + ' matches');
+          FETCH_MODE = usedProxy ? 'proxy' : 'direct';
+          if (matches.length && !workingHost) workingHost = host;
+          try { if (workingHost) localStorage.setItem('xion_working_host', workingHost); } catch(le) {}
+          for (var i = 0; i < matches.length; i++) allMatches.push(matches[i]);
+          sportDone();
+        }).catch(function(e) {
+          clearTimeout(timeout);
+          console.warn('[xion] fetch failed host=' + host + ' sport=' + sport + ': ' + e.message);
+          if (!useProxy && FETCH_MODE !== 'proxy') {
+            fetchSport(sportIdx, hostIdx, true);
+          } else {
+            fetchSport(sportIdx, hostIdx + 1, false);
+          }
+        });
+      }
+
+      for (var s = 0; s < SPORT_TYPES.length; s++) fetchSport(s, 0, false);
     }
 
     function buildMatchesHtml(filter) {

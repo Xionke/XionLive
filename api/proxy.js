@@ -8,6 +8,14 @@ function isChallengeText(text) {
   return typeof text === "string" && text.slice(0, 4096).indexOf("Just a moment") !== -1;
 }
 
+// Crowd cache: visitors with clean IPs seed it on success; challenged IPs read it on failure.
+var CACHE = {};
+var CACHE_TTL_MS = 90000;
+
+function cacheKey(url) {
+  try { var u = new URL(url); return u.pathname + (u.search || ""); } catch (e) { return url; }
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -39,12 +47,20 @@ export default async function handler(req, res) {
     }
 
     if (!resp || !resp.ok || isChallengeText(new TextDecoder().decode(buf.subarray(0, Math.min(buf.length, 4096))))) {
+      var ck = cacheKey(url);
+      var ce = CACHE[ck];
+      if (ce && Date.now() - ce.ts < CACHE_TTL_MS) {
+        if (ce.ct) res.setHeader("Content-Type", ce.ct);
+        res.setHeader("X-Cache", "crowd-hit");
+        return res.status(200).send(Buffer.from(ce.buf));
+      }
       return res.status(502).json({
         error: lastErr ? lastErr.message : "upstream failed",
         hint: "Upstream API is rate-limiting server IPs right now. It usually recovers within a minute — the app retries automatically.",
       });
     }
 
+    try { CACHE[cacheKey(url)] = { buf: buf, ct: resp.headers.get("content-type"), ts: Date.now() }; } catch (se) {}
     var ct = resp.headers.get("content-type");
     if (ct) res.setHeader("Content-Type", ct);
     res.setHeader("Access-Control-Expose-Headers", "*");
