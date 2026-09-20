@@ -1,4 +1,4 @@
-export const config = { api: { responseLimit: false, maxDuration: 10 } };
+export const config = { api: { responseLimit: false, maxDuration: 60 } };
 
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -60,13 +60,21 @@ export default async function handler(req, res) {
     if (!resp || !resp.ok || isChallengeText(new TextDecoder().decode(buf.subarray(0, Math.min(buf.length, 4096))))) {
       var ck = cacheKey(url);
       var ce = CACHE[ck];
-      if (ce && Date.now() - ce.ts < CACHE_TTL_MS) {
+      var nowMs = Date.now();
+      if (ce && nowMs - ce.ts < CACHE_TTL_MS) {
         if (ce.ct) res.setHeader("Content-Type", ce.ct);
         res.setHeader("X-Cache", "crowd-hit");
         return res.status(200).send(Buffer.from(ce.buf));
       }
+      if (ce && ce.src === "service" && nowMs - ce.ts < 300000) {
+        if (ce.ct) res.setHeader("Content-Type", ce.ct);
+        res.setHeader("X-Cache", "service-stale");
+        return res.status(200).send(Buffer.from(ce.buf));
+      }
       var sUrl = serviceUrl(url);
-      if (sUrl) {
+      global.__xionSvcLast = global.__xionSvcLast || {};
+      if (sUrl && nowMs - (global.__xionSvcLast[ck] || 0) >= 45000) {
+        global.__xionSvcLast[ck] = nowMs;
         try {
           var ac = new AbortController();
           var st = setTimeout(function () { ac.abort(); }, 25000);
@@ -75,12 +83,17 @@ export default async function handler(req, res) {
           var sBuf = new Uint8Array(await sResp.arrayBuffer());
           var sHead = new TextDecoder().decode(sBuf.subarray(0, Math.min(sBuf.length, 4096)));
           if (sResp.ok && !isChallengeText(sHead) && sBuf.length > 2) {
-            try { CACHE[cacheKey(url)] = { buf: sBuf, ct: sResp.headers.get("content-type"), ts: Date.now() }; } catch (ce2) {}
+            try { CACHE[cacheKey(url)] = { buf: sBuf, ct: sResp.headers.get("content-type"), ts: Date.now(), src: "service" }; } catch (ce2) {}
             if (sResp.headers.get("content-type")) res.setHeader("Content-Type", sResp.headers.get("content-type"));
             res.setHeader("X-Cache", "service");
             return res.status(200).send(Buffer.from(sBuf));
           }
         } catch (se2) {}
+      }
+      if (ce && nowMs - ce.ts < 1800000) {
+        if (ce.ct) res.setHeader("Content-Type", ce.ct);
+        res.setHeader("X-Cache", "stale");
+        return res.status(200).send(Buffer.from(ce.buf));
       }
       return res.status(502).json({
         error: lastErr ? lastErr.message : "upstream failed",
@@ -88,7 +101,7 @@ export default async function handler(req, res) {
       });
     }
 
-    try { CACHE[cacheKey(url)] = { buf: buf, ct: resp.headers.get("content-type"), ts: Date.now() }; } catch (se) {}
+    try { CACHE[cacheKey(url)] = { buf: buf, ct: resp.headers.get("content-type"), ts: Date.now(), src: "crowd" }; } catch (se) {}
     var ct = resp.headers.get("content-type");
     if (ct) res.setHeader("Content-Type", ct);
     res.setHeader("Access-Control-Expose-Headers", "*");
