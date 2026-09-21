@@ -645,101 +645,64 @@
       var mcount = document.getElementById('m-match-count');
       count.textContent = 'Loading...';
       mcount.textContent = 'Loading...';
-      console.log('[xion] loadMatches: fetching directly from API');
+      console.log('[xion] loadMatches: using centralized /api/matches endpoint');
 
-      var workingHost = null;
-      try { workingHost = localStorage.getItem('xion_working_host') || null; if (workingHost && API_HOSTS.indexOf(workingHost) === -1) API_HOSTS.unshift(workingHost); } catch(e) {}
-      var allMatches = [];
-      var pending = SPORT_TYPES.length;
-
-      function orderedHosts() {
-        var hs = API_HOSTS.slice();
-        if (workingHost) { var i = hs.indexOf(workingHost); if (i > 0) { hs.splice(i, 1); hs.unshift(workingHost); } }
-        return hs;
-      }
-
-      function sportDone() {
-        pending--;
-        if (pending <= 0) finishLoad();
-      }
-
-      function finishLoad() {
-        if (!allMatches.length && !matchData.length) {
-          var msg = 'Upstream busy — retrying…';
-          count.textContent = msg;
-          mcount.textContent = msg;
-          setTimeout(loadMatches, 20000);
-          return;
+      var cachedMatches = null;
+      try {
+        var cached = localStorage.getItem('xion_matches_cache');
+        if (cached) {
+          var parsed = JSON.parse(cached);
+          if (parsed && parsed.matches && parsed.ts && (Date.now() - parsed.ts < 3600000)) {
+            cachedMatches = parsed;
+          }
         }
+      } catch(e) {}
+
+      fetch('/api/matches', { signal: AbortSignal.timeout(25000) })
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(data) {
+          var newMatches = data.matches || [];
+          if (newMatches.length) {
+            try { localStorage.setItem('xion_matches_cache', JSON.stringify({ matches: newMatches, ts: Date.now() })); } catch(e) {}
+          }
+          mergeAndUpdate(newMatches, '');
+        })
+        .catch(function(e) {
+          console.warn('[xion] /api/matches failed:', e.message);
+          if (cachedMatches && cachedMatches.matches && cachedMatches.matches.length) {
+            var age = Math.floor((Date.now() - cachedMatches.ts) / 60000);
+            mergeAndUpdate(cachedMatches.matches, ' (cached ' + age + 'm ago)');
+          } else {
+            count.textContent = 'Upstream busy — retrying…';
+            mcount.textContent = 'Upstream busy — retrying…';
+            setTimeout(loadMatches, 20000);
+          }
+        });
+
+      function mergeAndUpdate(newMatches, suffix) {
         var nids = {};
-        for (var i = 0; i < allMatches.length; i++) nids[allMatches[i].matchId] = true;
+        for (var i = 0; i < newMatches.length; i++) nids[newMatches[i].matchId] = true;
         var merged = [];
         for (var i = 0; i < matchData.length; i++) {
           if (nids[matchData[i].matchId]) merged.push(matchData[i]);
         }
-        for (var i = 0; i < allMatches.length; i++) {
+        for (var i = 0; i < newMatches.length; i++) {
           var ex = false;
           for (var j = 0; j < merged.length; j++) {
-            if (merged[j].matchId === allMatches[i].matchId) { ex = true; break; }
+            if (merged[j].matchId === newMatches[i].matchId) { ex = true; break; }
           }
-          if (!ex) merged.push(allMatches[i]);
+          if (!ex) merged.push(newMatches[i]);
         }
         matchData = merged;
-        var txt = matchData.length + ' live match' + (matchData.length !== 1 ? 'es' : '') + (allMatches.length ? '' : ' (cached)');
+        var txt = matchData.length + ' live match' + (matchData.length !== 1 ? 'es' : '') + suffix;
         count.textContent = txt;
         mcount.textContent = txt;
         renderMatches();
         renderMobileMatches();
       }
-
-      function fetchSport(sportIdx, hostIdx, useProxy) {
-        if (hostIdx >= API_HOSTS.length) { sportDone(); return; }
-        var host = orderedHosts()[hostIdx];
-        var sport = SPORT_TYPES[sportIdx];
-        var url = host + '/api/match/live?sportType=' + sport;
-        console.log('[xion] fetching ' + url + ' mode=' + (useProxy ? 'proxy' : FETCH_MODE));
-
-        var controller = new AbortController();
-        var timeout = setTimeout(function() { controller.abort(); }, 12000);
-        var usedProxy = false;
-
-        function viaProxy() {
-          usedProxy = true;
-          return fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
-            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
-        }
-
-        var p;
-        if (useProxy || FETCH_MODE === 'proxy') {
-          p = viaProxy();
-        } else {
-          p = tryDirectFetch(url).catch(viaProxy);
-        }
-        p.then(function(buf) {
-          clearTimeout(timeout);
-          var u8 = new Uint8Array(buf.slice(0, 32)); var sniff = '';
-          for (var si = 0; si < u8.length; si++) sniff += String.fromCharCode(u8[si]);
-          if (sniff.charAt(0) === '<' || sniff.indexOf('Just a moment') !== -1) throw new Error('challenge html');
-          var matches = [];
-          try { matches = window.parseMatchesFromBuffer(buf, sport) || []; } catch(pe) { matches = []; }
-          console.log('[xion] host=' + host + ' sport=' + sport + ' got ' + matches.length + ' matches');
-          FETCH_MODE = usedProxy ? 'proxy' : 'direct';
-          if (matches.length && !workingHost) workingHost = host;
-          try { if (workingHost) localStorage.setItem('xion_working_host', workingHost); } catch(le) {}
-          for (var i = 0; i < matches.length; i++) allMatches.push(matches[i]);
-          sportDone();
-        }).catch(function(e) {
-          clearTimeout(timeout);
-          console.warn('[xion] fetch failed host=' + host + ' sport=' + sport + ': ' + e.message);
-          if (!useProxy && FETCH_MODE !== 'proxy') {
-            fetchSport(sportIdx, hostIdx, true);
-          } else {
-            fetchSport(sportIdx, hostIdx + 1, false);
-          }
-        });
-      }
-
-      for (var s = 0; s < SPORT_TYPES.length; s++) fetchSport(s, 0, false);
     }
 
     function buildMatchesHtml(filter) {
@@ -835,31 +798,23 @@
       var el = document.getElementById('server-status');
       el.textContent = 'Checking API...';
       function run() {
-        var url = API_HOSTS[0] + '/api/match/live?sportType=1';
-        var controller = new AbortController();
-        var timeout = setTimeout(function() { controller.abort(); }, 9000);
-        var probe = tryDirectFetch(url, 8000).catch(function() {
-          return fetch('/api/proxy?url=' + encodeURIComponent(url) + '&referer=' + encodeURIComponent(API_HEADERS.Referer) + '&origin=' + encodeURIComponent(API_HEADERS.Origin), { signal: controller.signal })
-            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
-        });
-        probe
-          .then(function(buf) {
-            clearTimeout(timeout);
-            var matches = window.parseMatchesFromBuffer(buf, 1);
-            el.textContent = matches.length ? ('API OK (' + matches.length + ' football)') : 'API OK';
+        fetch('/api/matches', { signal: AbortSignal.timeout(12000) })
+          .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(function(data) {
+            var count = (data.matches || []).length;
+            el.textContent = count ? ('API OK (' + count + ' matches)') : 'API OK';
             el.classList.add('on');
           })
           .catch(function(e) {
-            clearTimeout(timeout);
             console.error('[xion] API check failed:', e.message);
             el.textContent = 'Upstream busy — retrying…';
             setTimeout(run, 30000);
           });
       }
-      discoverApiHost().then(run);
+      run();
     })();
 
-    renderHistory();renderMobileHistory();discoverApiHost().then(loadMatches);setInterval(function(){ discoverApiHost().then(loadMatches); },30000);
+    renderHistory();renderMobileHistory();loadMatches();setInterval(loadMatches,60000);
 
     /* === MOBILE TOUCH GESTURES === */
     (function() {

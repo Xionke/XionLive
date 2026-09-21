@@ -10,7 +10,7 @@ function isChallengeText(text) {
 
 // Crowd cache: visitors with clean IPs seed it on success; challenged IPs read it on failure.
 var CACHE = {};
-var CACHE_TTL_MS = 90000;
+var CACHE_TTL_MS = 300000;
 
 function cacheKey(url) {
   try { var u = new URL(url); return u.pathname + (u.search || ""); } catch (e) { return url; }
@@ -66,7 +66,7 @@ export default async function handler(req, res) {
         res.setHeader("X-Cache", "crowd-hit");
         return res.status(200).send(Buffer.from(ce.buf));
       }
-      if (ce && ce.src === "service" && nowMs - ce.ts < 300000) {
+      if (ce && ce.src === "service" && nowMs - ce.ts < 600000) {
         if (ce.ct) res.setHeader("Content-Type", ce.ct);
         res.setHeader("X-Cache", "service-stale");
         return res.status(200).send(Buffer.from(ce.buf));
@@ -90,14 +90,14 @@ export default async function handler(req, res) {
           }
         } catch (se2) {}
       }
-      if (ce && nowMs - ce.ts < 1800000) {
+      if (ce && nowMs - ce.ts < 21600000) {
         if (ce.ct) res.setHeader("Content-Type", ce.ct);
         res.setHeader("X-Cache", "stale");
         return res.status(200).send(Buffer.from(ce.buf));
       }
       return res.status(502).json({
         error: lastErr ? lastErr.message : "upstream failed",
-        hint: "Upstream API is rate-limiting server IPs right now. It usually recovers within a minute — the app retries automatically.",
+        hint: "Upstream API is rate-limiting server IPs right now. The app will retry automatically. Try adding SCRAPERAPI_KEY env var for reliable access.",
       });
     }
 
