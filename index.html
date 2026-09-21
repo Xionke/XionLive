@@ -677,7 +677,7 @@
       var mcount = document.getElementById('m-match-count');
       count.textContent = 'Loading...';
       mcount.textContent = 'Loading...';
-      console.log('[xion] loadMatches: trying direct browser fetch first');
+      console.log('[xion] loadMatches: SportScore (primary) + upstream (secondary)');
 
       var cachedMatches = null;
       try {
@@ -690,18 +690,121 @@
         }
       } catch(e) {}
 
-      tryDirectFetch()
+      fetchSportScore()
         .then(function(newMatches) {
           if (newMatches.length) {
             try { localStorage.setItem('xion_matches_cache', JSON.stringify({ matches: newMatches, ts: Date.now() })); } catch(e) {}
           }
           mergeAndUpdate(newMatches, '');
+          tryUpstreamSecondary();
         })
         .catch(function(e) {
-          console.warn('[xion] direct fetch failed:', e.message);
-          console.log('[xion] falling back to /api/matches proxy');
-          fetchProxy();
+          console.warn('[xion] SportScore failed:', e.message);
+          tryUpstreamPrimary();
         });
+
+      function fetchSportScore() {
+        var SPORTS = ['football', 'basketball', 'tennis'];
+        var promises = SPORTS.map(function(sport) {
+          return fetch('https://sportscore.com/api/widget/matches/?sport=' + sport + '&limit=50', {
+            signal: AbortSignal.timeout(10000)
+          })
+          .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(function(data) {
+            var matches = [];
+            var items = data.matches || [];
+            for (var i = 0; i < items.length; i++) {
+              var m = items[i];
+              if (!m || !m.home || !m.away) continue;
+              var status = 'live';
+              if (m.status === 'finished') status = 'finished';
+              else if (m.status === 'upcoming') status = 'upcoming';
+              else if (m.status === 'live' || (m.status_text && m.status_text.indexOf("'") !== -1)) status = 'live';
+              else status = m.status || 'unknown';
+              var mid = (m.home + '_' + m.away + '_' + (m.time || '')).replace(/[^a-zA-Z0-9]/g, '').substring(0, 40);
+              var slug = (m.url || '').replace(/^\//, '').replace(/\/$/, '');
+              var comp = m.competition || '';
+              var sc = (status === 'live') ? '1' : (status === 'finished') ? '2' : '0';
+              var compLogo = m.competition_logo || '';
+              matches.push({
+                matchId: mid,
+                league: comp,
+                home: m.home,
+                away: m.away,
+                name: m.home + ' vs ' + m.away,
+                homeScore: m.home_score != null ? parseInt(m.home_score) : null,
+                awayScore: m.away_score != null ? parseInt(m.away_score) : null,
+                url: 'https://sportscore.com' + (m.url || ''),
+                source: 'sportscore.com',
+                status: status,
+                statusText: m.status_text || '',
+                sport: sport,
+                time: m.time || '',
+                homeLogo: m.home_logo || '',
+                awayLogo: m.away_logo || '',
+                compLogo: compLogo,
+                sc: sc
+              });
+            }
+            return matches;
+          })
+          .catch(function(e) { console.warn('[xion] SportScore ' + sport + ' failed:', e.message); return []; });
+        });
+        return Promise.all(promises).then(function(results) {
+          var all = [];
+          for (var i = 0; i < results.length; i++) {
+            for (var j = 0; j < results[i].length; j++) all.push(results[i][j]);
+          }
+          if (!all.length) throw new Error('no SportScore data');
+          return all;
+        });
+      }
+
+      function tryUpstreamPrimary() {
+        tryDirectFetch()
+          .then(function(newMatches) {
+            if (newMatches.length) {
+              try { localStorage.setItem('xion_matches_cache', JSON.stringify({ matches: newMatches, ts: Date.now() })); } catch(e) {}
+            }
+            mergeAndUpdate(newMatches, '');
+          })
+          .catch(function(e) {
+            console.warn('[xion] direct fetch failed:', e.message);
+            if (cachedMatches && cachedMatches.matches && cachedMatches.matches.length) {
+              var age = Math.floor((Date.now() - cachedMatches.ts) / 60000);
+              mergeAndUpdate(cachedMatches.matches, ' (cached ' + age + 'm ago)');
+            } else {
+              count.textContent = 'Upstream busy — retrying…';
+              mcount.textContent = 'Upstream busy — retrying…';
+              setTimeout(loadMatches, 20000);
+            }
+          });
+      }
+
+      function tryUpstreamSecondary() {
+        tryDirectFetch()
+          .then(function(upstreamMatches) {
+            if (upstreamMatches.length) {
+              var existing = {};
+              for (var i = 0; i < matchData.length; i++) existing[matchData[i].matchId] = true;
+              var added = 0;
+              for (var j = 0; j < upstreamMatches.length; j++) {
+                if (!existing[upstreamMatches[j].matchId]) {
+                  matchData.push(upstreamMatches[j]);
+                  added++;
+                }
+              }
+              if (added) {
+                var txt = matchData.length + ' live match' + (matchData.length !== 1 ? 'es' : '') + ' (+streaming)';
+                count.textContent = txt;
+                mcount.textContent = txt;
+                renderMatches();
+                renderMobileMatches();
+              }
+            }
+          })
+          .catch(function() {});
+      }
 
       function tryDirectFetch() {
         return new Promise(function(resolve, reject) {
