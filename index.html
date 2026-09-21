@@ -640,12 +640,44 @@
       'Origin': 'https://www.fctv33hd.pw'
     };
 
-        function loadMatches() {
+    var API_HOSTS = [
+      'https://apis-data10.tcllu137fien.ru',
+      'https://apis-data11.tcllu137fien.ru',
+      'https://apis-data10.tcdru136ovur.ru',
+      'https://apis-data8.tcdru136ovur.ru',
+      'https://apis-data-defra10.tcllu137fien.ru'
+    ];
+    var SPORT_TYPES = [1,2,3,4,6,7,8,9,10,11,12,13,14,15,16,90];
+
+    function isChallengeText(t) {
+      return typeof t === 'string' && t.indexOf('Just a moment') !== -1;
+    }
+
+    function fetchSportDirect(host, sport) {
+      var url = host + '/api/match/live?sportType=' + sport;
+      return fetch(url, {
+        headers: {
+          'Referer': 'https://www.fctv33hd.pw/'
+        },
+        signal: AbortSignal.timeout(8000)
+      })
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.arrayBuffer();
+      })
+      .then(function(buf) {
+        var head = new TextDecoder().decode(new Uint8Array(buf).subarray(0, 200));
+        if (isChallengeText(head)) throw new Error('Cloudflare challenge');
+        return { buf: buf, sport: sport };
+      });
+    }
+
+    function loadMatches() {
       var count = document.getElementById('match-count');
       var mcount = document.getElementById('m-match-count');
       count.textContent = 'Loading...';
       mcount.textContent = 'Loading...';
-      console.log('[xion] loadMatches: using centralized /api/matches endpoint');
+      console.log('[xion] loadMatches: trying direct browser fetch first');
 
       var cachedMatches = null;
       try {
@@ -658,29 +690,77 @@
         }
       } catch(e) {}
 
-      fetch('/api/matches', { signal: AbortSignal.timeout(25000) })
-        .then(function(r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        })
-        .then(function(data) {
-          var newMatches = data.matches || [];
+      tryDirectFetch()
+        .then(function(newMatches) {
           if (newMatches.length) {
             try { localStorage.setItem('xion_matches_cache', JSON.stringify({ matches: newMatches, ts: Date.now() })); } catch(e) {}
           }
           mergeAndUpdate(newMatches, '');
         })
         .catch(function(e) {
-          console.warn('[xion] /api/matches failed:', e.message);
-          if (cachedMatches && cachedMatches.matches && cachedMatches.matches.length) {
-            var age = Math.floor((Date.now() - cachedMatches.ts) / 60000);
-            mergeAndUpdate(cachedMatches.matches, ' (cached ' + age + 'm ago)');
-          } else {
-            count.textContent = 'Upstream busy — retrying…';
-            mcount.textContent = 'Upstream busy — retrying…';
-            setTimeout(loadMatches, 20000);
-          }
+          console.warn('[xion] direct fetch failed:', e.message);
+          console.log('[xion] falling back to /api/matches proxy');
+          fetchProxy();
         });
+
+      function tryDirectFetch() {
+        return new Promise(function(resolve, reject) {
+          var allMatches = [];
+          var hostIdx = 0;
+
+          function tryHost() {
+            if (hostIdx >= API_HOSTS.length) {
+              return reject(new Error('all hosts failed'));
+            }
+            var host = API_HOSTS[hostIdx];
+            var promises = SPORT_TYPES.map(function(sport) {
+              return fetchSportDirect(host, sport).catch(function() { return null; });
+            });
+            Promise.all(promises).then(function(results) {
+              var fetched = 0;
+              for (var i = 0; i < results.length; i++) {
+                if (results[i]) {
+                  fetched++;
+                  try {
+                    var parsed = window.parseMatchesFromBuffer(results[i].buf, results[i].sport);
+                    for (var j = 0; j < parsed.length; j++) allMatches.push(parsed[j]);
+                  } catch(e) { console.warn('[xion] parse error sport ' + results[i].sport + ':', e); }
+                }
+              }
+              if (fetched > 0) return resolve(allMatches);
+              hostIdx++;
+              tryHost();
+            });
+          }
+          tryHost();
+        });
+      }
+
+      function fetchProxy() {
+        fetch('/api/matches', { signal: AbortSignal.timeout(25000) })
+          .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+          })
+          .then(function(data) {
+            var newMatches = data.matches || [];
+            if (newMatches.length) {
+              try { localStorage.setItem('xion_matches_cache', JSON.stringify({ matches: newMatches, ts: Date.now() })); } catch(e) {}
+            }
+            mergeAndUpdate(newMatches, '');
+          })
+          .catch(function(e) {
+            console.warn('[xion] /api/matches proxy also failed:', e.message);
+            if (cachedMatches && cachedMatches.matches && cachedMatches.matches.length) {
+              var age = Math.floor((Date.now() - cachedMatches.ts) / 60000);
+              mergeAndUpdate(cachedMatches.matches, ' (cached ' + age + 'm ago)');
+            } else {
+              count.textContent = 'Upstream busy — retrying…';
+              mcount.textContent = 'Upstream busy — retrying…';
+              setTimeout(loadMatches, 20000);
+            }
+          });
+      }
 
       function mergeAndUpdate(newMatches, suffix) {
         var nids = {};

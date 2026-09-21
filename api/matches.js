@@ -13,6 +13,14 @@ var API_HOSTS = [
 ];
 var SPORT_TYPES = [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 90];
 
+var gotScraping;
+async function getGotScraping() {
+  if (!gotScraping) {
+    gotScraping = (await import("got-scraping")).gotScraping;
+  }
+  return gotScraping;
+}
+
 function isChallengeText(text) {
   return typeof text === "string" && text.slice(0, 4096).indexOf("Just a moment") !== -1;
 }
@@ -20,6 +28,29 @@ function isChallengeText(text) {
 var MATCH_CACHE = null;
 var MATCH_CACHE_TS = 0;
 var MATCH_CACHE_TTL = 60000;
+
+async function fetchSport(host, sport) {
+  var url = host + "/api/match/live?sportType=" + sport;
+  var gs = await getGotScraping();
+  var resp = await gs({
+    url: url,
+    headers: {
+      "User-Agent": UA,
+      "Referer": REFERER,
+      "Origin": ORIGIN,
+      "Accept": "application/json, text/plain, */*"
+    },
+    timeout: { request: 7000 },
+    followRedirect: true,
+    responseType: "buffer"
+  });
+  if (resp.statusCode !== 200) throw new Error("HTTP " + resp.statusCode);
+  var body = resp.body;
+  var buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  var head = buf.subarray(0, 200).toString("utf8");
+  if (isChallengeText(head)) throw new Error("Cloudflare challenge");
+  return { buf: buf, sport: sport };
+}
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -39,38 +70,18 @@ export default async function handler(req, res) {
 
     for (var hi = 0; hi < API_HOSTS.length; hi++) {
       var host = API_HOSTS[hi];
-      var fetched = 0;
       var promises = SPORT_TYPES.map(function(sport) {
-        var url = host + "/api/match/live?sportType=" + sport;
-        return fetch(url, {
-          headers: {
-            "User-Agent": UA,
-            "Referer": REFERER,
-            "Origin": ORIGIN,
-            "Accept": "application/json, text/plain, */*"
-          },
-          redirect: "follow",
-          signal: AbortSignal.timeout(8000)
-        })
-        .then(function(r) {
-          if (!r.ok) throw new Error("HTTP " + r.status);
-          return r.arrayBuffer();
-        })
-        .then(function(buf) {
-          var head = new TextDecoder().decode(new Uint8Array(buf).subarray(0, 200));
-          if (isChallengeText(head)) throw new Error("Cloudflare challenge");
-          fetched++;
-          return { buf: buf, sport: sport };
-        })
-        .catch(function(e) {
+        return fetchSport(host, sport).catch(function(e) {
           lastErr = e;
           return null;
         });
       });
 
       var results = await Promise.all(promises);
+      var fetched = 0;
       for (var ri = 0; ri < results.length; ri++) {
         if (results[ri]) {
+          fetched++;
           try {
             var parsed = parseMatchesFromBuffer(results[ri].buf, results[ri].sport);
             for (var pi = 0; pi < parsed.length; pi++) allMatches.push(parsed[pi]);
